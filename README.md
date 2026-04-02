@@ -48,7 +48,7 @@ Navigate your bird through an endless stream of pipes, survive surprise **dungeo
 ## 📥 Download & Play
 
 1. Go to the [**Releases**](https://github.com/BoykoNikolov99/FlappyBird/releases) page
-2. Download the latest **FlappyBird-v1.0.zip**
+2. Download the latest **FlappyBird-v1.0.1.zip**
 3. Extract the zip to any folder
 4. Run **FlappyBird.exe**
 5. Flap away! 🐦
