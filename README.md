@@ -50,7 +50,7 @@ Navigate your bird through an endless stream of pipes, survive surprise **dungeo
 1. Go to the [**Releases**](https://github.com/BoykoNikolov99/FlappyBird/releases) page
 2. Download the latest **FlappyBird-v1.0.zip**
 3. Extract the zip to any folder
-4. Run **WindowsFormsApp1.exe**
+4. Run **FlappyBird.exe**
 5. Flap away! 🐦
 
 ### Requirements
@@ -65,7 +65,7 @@ Navigate your bird through an endless stream of pipes, survive surprise **dungeo
    ```
    git clone https://github.com/BoykoNikolov99/FlappyBird.git
    ```
-2. Open **WindowsFormsApp1.slnx** in Visual Studio 2022 or later
+2. Open **WindowsFormsApp1.slnx** in Visual Studio
 3. Set the configuration to **Release**
 4. Build and run (**F5**)
 
