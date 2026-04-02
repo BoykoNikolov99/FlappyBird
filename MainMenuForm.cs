@@ -18,10 +18,11 @@ namespace WindowsFormsApp1
         // settings that can be changed in Options
         public int PipeGap { get; set; } = 120;
         public int BasePipeSpeed { get; set; } = 6;
-        public int DungeonIntervalSeconds { get; set; } = 10;
+        public int DungeonIntervalSeconds { get; set; } = 6;
 
         public MainMenuForm()
         {
+            highScore = Properties.Settings.Default.HighScore;
             InitializeMainMenu();
         }
 
@@ -71,7 +72,7 @@ namespace WindowsFormsApp1
 
             // high score display
             highScoreLabel = new Label();
-            highScoreLabel.Text = "High Score: 0";
+            highScoreLabel.Text = "High Score: " + highScore;
             highScoreLabel.Font = new Font("Microsoft Sans Serif", 13F, FontStyle.Bold);
             highScoreLabel.ForeColor = Color.White;
             highScoreLabel.BackColor = Color.Transparent;
@@ -131,6 +132,8 @@ namespace WindowsFormsApp1
                 if (gameForm.HighScore > highScore)
                 {
                     highScore = gameForm.HighScore;
+                    Properties.Settings.Default.HighScore = highScore;
+                    Properties.Settings.Default.Save();
                     highScoreLabel.Text = "High Score: " + highScore;
                     highScoreLabel.Location = new Point(
                         (highScoreLabel.Parent.Width - highScoreLabel.PreferredWidth) / 2,

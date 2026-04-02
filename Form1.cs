@@ -59,7 +59,7 @@ namespace WindowsFormsApp1
         private bool inDungeon = false;
         private DateTime lastDungeonTrigger = DateTime.MinValue;
         private DateTime dungeonEndTime = DateTime.MinValue;
-        private TimeSpan dungeonInterval = TimeSpan.FromSeconds(10);
+        private TimeSpan dungeonInterval = TimeSpan.FromSeconds(6);
         private TimeSpan dungeonDuration = TimeSpan.FromSeconds(6);
         private int dungeonSpacing = 120; // tighter spacing during dungeon
         private int originalPipeSpacing;

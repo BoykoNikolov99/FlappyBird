@@ -84,7 +84,7 @@ namespace WindowsFormsApp1
             this.Controls.Add(lblDungeon);
 
             trackDungeon = new TrackBar();
-            trackDungeon.Minimum = 5;
+            trackDungeon.Minimum = 3;
             trackDungeon.Maximum = 30;
             trackDungeon.Value = DungeonIntervalSeconds;
             trackDungeon.TickFrequency = 5;
