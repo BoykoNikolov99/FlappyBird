@@ -8,6 +8,7 @@ using System.Text;
 using System.Threading.Tasks;
 using System.IO;
 using System.Diagnostics;
+using System.Runtime.InteropServices;
 using System.Windows.Forms;
 
 namespace WindowsFormsApp1
@@ -29,10 +30,12 @@ namespace WindowsFormsApp1
         private int highScore = 0;
         /// <summary>The highest score across sessions (updated live).</summary>
         public int HighScore => highScore;
-        private Label highScoreText;
 
-        // runtime label shown on game over
-        private System.Windows.Forms.Label gameOverText;
+        // Owner-drawn score HUD control that renders on top of pipes
+        private ScoreHud scoreHud;
+
+        // Game over image loaded once and painted directly onto the overlay bitmap
+        private Image gameOverImg;
         // multiple pipe pairs
         private List<PictureBox> pipeTops;
         private List<PictureBox> pipeBottoms;
@@ -50,7 +53,7 @@ namespace WindowsFormsApp1
         private Image pipeImgLoaded = null;
         private Image pipeImgTopRotated = null;
         // runtime UI sliders removed per user request
-        private System.Windows.Forms.Button pauseButton;
+        private ModernButton pauseButton;
         // on-screen pause indicator
         private System.Windows.Forms.Label pauseIndicator;
         // smooth speed ramping
@@ -75,6 +78,42 @@ namespace WindowsFormsApp1
         private int flapImpulse = -12;
         private int maxFallSpeed = 10;
 
+        // High-resolution game loop (~60 Hz) replacing WinForms Timer (~50 Hz max)
+        private const double TargetFrameMs = 1000.0 / 60.0;   // ~16.67ms per frame
+        private const double BaseFrameMs = 33.0;               // original design tick rate used to keep physics speed consistent
+        private Stopwatch gameLoopWatch;
+        private bool gameLoopRunning;
+        private double frameDt = 1.0; // delta-time ratio: elapsed / BaseFrameMs
+        // Floating-point accumulators for sub-pixel precision
+        private double birdY;
+        private double verticalSpeedF;
+        private double pipeMoveFrac;
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct NativeMsg
+        {
+            public IntPtr hWnd;
+            public uint msg;
+            public IntPtr wParam;
+            public IntPtr lParam;
+            public uint time;
+            public System.Drawing.Point pt;
+        }
+
+        [DllImport("user32.dll")]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static extern bool PeekMessage(out NativeMsg lpMsg, IntPtr hWnd,
+            uint wMsgFilterMin, uint wMsgFilterMax, uint wRemoveMsg);
+
+        [DllImport("user32.dll")]
+        private static extern IntPtr SendMessage(IntPtr hWnd, int wMsg, bool wParam, int lParam);
+        private const int WM_SETREDRAW = 0x000B;
+
+        [DllImport("winmm.dll")]
+        private static extern uint timeBeginPeriod(uint uMilliseconds);
+        [DllImport("winmm.dll")]
+        private static extern uint timeEndPeriod(uint uMilliseconds);
+
         public Form1()
         {
             InitializeComponent();
@@ -98,45 +137,170 @@ namespace WindowsFormsApp1
             this.MaximizeBox = false;
         }
 
+        /// <summary>
+        /// Clips the bird PictureBox to a Region containing only the opaque
+        /// pixels of its image. This eliminates the rectangular transparent
+        /// background that WinForms would otherwise fill with the parent's
+        /// background, causing visible artifacts when overlapping pipes.
+        /// </summary>
+        private void ApplyBirdRegion()
+        {
+            if (bird.Image == null || bird.Width == 0 || bird.Height == 0) return;
+
+            // Render the image at the PictureBox display size
+            var bmp = new Bitmap(bird.Width, bird.Height);
+            using (var g = Graphics.FromImage(bmp))
+            {
+                g.DrawImage(bird.Image, 0, 0, bird.Width, bird.Height);
+            }
+
+            // Build a region from horizontal runs of opaque pixels (fast for small bitmaps)
+            var rgn = new Region();
+            rgn.MakeEmpty();
+            for (int y = 0; y < bmp.Height; y++)
+            {
+                int? runStart = null;
+                for (int x = 0; x < bmp.Width; x++)
+                {
+                    if (bmp.GetPixel(x, y).A > 0)
+                    {
+                        if (runStart == null) runStart = x;
+                    }
+                    else
+                    {
+                        if (runStart != null)
+                        {
+                            rgn.Union(new Rectangle(runStart.Value, y, x - runStart.Value, 1));
+                            runStart = null;
+                        }
+                    }
+                }
+                if (runStart != null)
+                    rgn.Union(new Rectangle(runStart.Value, y, bmp.Width - runStart.Value, 1));
+            }
+
+            bird.Region = rgn;
+            bmp.Dispose();
+        }
+
+        // Enable WS_EX_COMPOSITED to double-buffer all child controls and eliminate
+        // flicker/stuttering when many PictureBoxes move simultaneously.
+        protected override CreateParams CreateParams
+        {
+            get
+            {
+                CreateParams cp = base.CreateParams;
+                cp.ExStyle |= 0x02000000; // WS_EX_COMPOSITED
+                return cp;
+            }
+        }
+
         private void ApplyPipeAppearance()
         {
             if (pipeTops == null) return;
 
-            // If a pipe image was loaded, use it by default
-            bool useImage = (pipeImgLoaded != null);
+            bool useCustomPaint = (pipeImgLoaded != null && pipeImgTopRotated != null);
 
             for (int i = 0; i < pipeTops.Count; i++)
             {
                 var top = pipeTops[i];
                 var bottom = pipeBottoms[i];
+                SetupPipePaint(top, isTopPipe: true, useCustomPaint);
+                SetupPipePaint(bottom, isTopPipe: false, useCustomPaint);
+            }
+        }
 
-                if (useImage)
-                {
-                    // use the loaded image for bottom pipes and a cached rotated image for top pipes
-                    bottom.Image = pipeImgLoaded;
-                    bottom.SizeMode = PictureBoxSizeMode.StretchImage;
-                    bottom.BackColor = Color.Transparent;
+        private void SetupPipePaint(PictureBox pipe, bool isTopPipe, bool useCustomPaint)
+        {
+            // Remove any previous Paint handler to avoid stacking
+            pipe.Paint -= PipeTop_Paint;
+            pipe.Paint -= PipeBottom_Paint;
+            pipe.Image = null;
 
-                    try
-                    {
-                        top.Image = pipeImgTopRotated ?? pipeImgLoaded;
-                        top.SizeMode = PictureBoxSizeMode.StretchImage;
-                        top.BackColor = Color.Transparent;
-                    }
-                    catch
-                    {
-                        top.Image = pipeImgLoaded;
-                        top.SizeMode = PictureBoxSizeMode.StretchImage;
-                        top.BackColor = Color.Transparent;
-                    }
-                }
+            if (useCustomPaint)
+            {
+                pipe.BackColor = Color.Transparent;
+                if (isTopPipe)
+                    pipe.Paint += PipeTop_Paint;
                 else
+                    pipe.Paint += PipeBottom_Paint;
+            }
+            else
+            {
+                pipe.BackColor = pipeColor;
+            }
+        }
+
+        private void PipeTop_Paint(object sender, PaintEventArgs e)
+        {
+            // Top pipe: cap at bottom (facing the gap), body extending upward.
+            // Uses pipeImgTopRotated (180° flipped) so the cap is at the image bottom.
+            if (pipeImgTopRotated == null) return;
+            var pb = (PictureBox)sender;
+            var g = e.Graphics;
+            int w = pb.Width;
+            int h = pb.Height;
+
+            int imgW = pipeImgTopRotated.Width;
+            int imgH = pipeImgTopRotated.Height;
+            // Scale the image height to match the PictureBox width (preserve aspect ratio)
+            int scaledH = (int)((double)imgH / imgW * w);
+
+            if (h <= scaledH)
+            {
+                // PictureBox shorter than scaled image: draw the bottom portion
+                // (which contains the cap) so the cap is always fully visible.
+                int srcY = imgH - (int)((double)h / scaledH * imgH);
+                g.DrawImage(pipeImgTopRotated, new Rectangle(0, 0, w, h),
+                            new Rectangle(0, srcY, imgW, imgH - srcY), GraphicsUnit.Pixel);
+            }
+            else
+            {
+                // PictureBox taller: draw full image at the bottom, extend body upward
+                int yOffset = h - scaledH;
+                // Stretch the top few rows of the flipped image (body) to fill above
+                if (yOffset > 0)
                 {
-                    // clear images and use solid color
-                    top.Image = null;
-                    bottom.Image = null;
-                    top.BackColor = pipeColor;
-                    bottom.BackColor = pipeColor;
+                    g.DrawImage(pipeImgTopRotated, new Rectangle(0, 0, w, yOffset),
+                                new Rectangle(0, 0, imgW, 2), GraphicsUnit.Pixel);
+                }
+                g.DrawImage(pipeImgTopRotated, new Rectangle(0, yOffset, w, scaledH));
+            }
+        }
+
+        private void PipeBottom_Paint(object sender, PaintEventArgs e)
+        {
+            // Bottom pipe: cap at top (facing the gap), body extending downward.
+            // Uses pipeImgLoaded (original) so the cap is at the image top.
+            if (pipeImgLoaded == null) return;
+            var pb = (PictureBox)sender;
+            var g = e.Graphics;
+            int w = pb.Width;
+            int h = pb.Height;
+
+            int imgW = pipeImgLoaded.Width;
+            int imgH = pipeImgLoaded.Height;
+            // Scale the image height to match the PictureBox width (preserve aspect ratio)
+            int scaledH = (int)((double)imgH / imgW * w);
+
+            if (h <= scaledH)
+            {
+                // PictureBox shorter than scaled image: draw from the top
+                // (cap and as much body as fits).
+                int srcH = (int)((double)h / scaledH * imgH);
+                g.DrawImage(pipeImgLoaded, new Rectangle(0, 0, w, h),
+                            new Rectangle(0, 0, imgW, srcH), GraphicsUnit.Pixel);
+            }
+            else
+            {
+                // PictureBox taller: draw full image at the top, extend body downward
+                g.DrawImage(pipeImgLoaded, new Rectangle(0, 0, w, scaledH));
+                // Stretch the bottom few rows of the image (body) to fill below
+                int remaining = h - scaledH;
+                if (remaining > 0)
+                {
+                    g.DrawImage(pipeImgLoaded, new Rectangle(0, scaledH, w, remaining),
+                                new Rectangle(0, imgH - 2, imgW, 2), GraphicsUnit.Pixel);
                 }
             }
         }
@@ -173,9 +337,10 @@ namespace WindowsFormsApp1
                     pipeBottom.Left = posX;
                     int topMax = Math.Max(41, this.ClientSize.Height - pipeGap - 80);
                     int topH = rnd.Next(40, topMax);
-                    pipeTop.Height = topH;
+                    pipeTop.Top = -20;
+                    pipeTop.Height = topH + 20;
                     pipeBottom.Top = topH + pipeGap;
-                    pipeBottom.Height = this.ClientSize.Height - pipeBottom.Top;
+                    pipeBottom.Height = this.ClientSize.Height - pipeBottom.Top + 20;
                     pipeTops.Add(pipeTop);
                     pipeBottoms.Add(pipeBottom);
                 }
@@ -189,9 +354,10 @@ namespace WindowsFormsApp1
                     bottom.Left = posX;
                     int topMax = Math.Max(41, this.ClientSize.Height - pipeGap - 80);
                     int topH = rnd.Next(40, topMax);
-                    top.Height = topH;
+                    top.Top = -20;
+                    top.Height = topH + 20;
                     bottom.Top = topH + pipeGap;
-                    bottom.Height = this.ClientSize.Height - bottom.Top;
+                    bottom.Height = this.ClientSize.Height - bottom.Top + 20;
                     top.Name = "pipeTop" + i;
                     bottom.Name = "pipeBottom" + i;
                     this.Controls.Add(top);
@@ -205,18 +371,6 @@ namespace WindowsFormsApp1
 
             // apply appearance to newly created pipes
             ApplyPipeAppearance();
-
-            try
-            {
-                Debug.WriteLine($"RebuildPipes completed: newPairs={newPairs}, pipeTops={pipeTops.Count}");
-                for (int i = 0; i < pipeTops.Count; i++)
-                {
-                    var t = pipeTops[i];
-                    var b = pipeBottoms[i];
-                    Debug.WriteLine($" Rebuilt #{i}: top={t.Name}, left={t.Left}, topH={t.Height}, bottomTop={b.Top}");
-                }
-            }
-            catch { }
         }
 
         private void StartDungeon()
@@ -227,12 +381,10 @@ namespace WindowsFormsApp1
             // and visual glitches.
             if (inDungeon) return;
             if (pendingDungeonCleanup) {
-                Debug.WriteLine("StartDungeon skipped: pending dungeon cleanup in progress");
                 return;
             }
             if (dungeonTops != null && dungeonTops.Count > 0)
             {
-                Debug.WriteLine("StartDungeon skipped: existing dungeon pipes still present");
                 return;
             }
             inDungeon = true;
@@ -253,16 +405,6 @@ namespace WindowsFormsApp1
             if (dungeonBottoms == null) dungeonBottoms = new List<PictureBox>();
 
             int rightmost = pipeTops.Max(p => p.Left);
-            Debug.WriteLine($"StartDungeon pre-spawn dump: rightmost={rightmost}, pipeTops={pipeTops.Count}, dungeonTops={(dungeonTops==null?0:dungeonTops.Count)}");
-            try
-            {
-                for (int pi = 0; pi < pipeTops.Count; pi++)
-                {
-                    var p = pipeTops[pi];
-                    Debug.WriteLine($"  Normal #{pi}: {p.Name} left={p.Left} topH={p.Height} bottomTop={pipeBottoms[pi].Top}");
-                }
-            }
-            catch { }
 
             // ensure the effective gap is at least big enough for the bird to pass
             // account for bird size and any pipe image caps so the visual gap matches collision
@@ -270,17 +412,9 @@ namespace WindowsFormsApp1
             int minGapForBird = (bird != null) ? bird.Height + 20 + imageCapMargin : 40;
             int effectiveGap = Math.Max(pipeGap, minGapForBird);
 
-            Debug.WriteLine($"StartDungeon spacing: effectiveDungeonSpacing={effectiveDungeonSpacing}, effectiveGap={effectiveGap}");
-
-            Debug.WriteLine($"StartDungeon at {DateTime.Now:HH:mm:ss.fff}: rightmost={rightmost}, pipePairs={pipePairs}, pipeSpacing={pipeSpacing}, effectiveGap={effectiveGap}");
-
-            // Extra debugging: show current dungeon region and sample of upcoming pipe X positions
-            Debug.WriteLine($"Current dungeonRegionStart={dungeonRegionStart}, dungeonRegionEnd={dungeonRegionEnd}");
-
             // reduce density and spawn further right to avoid overlapping existing pipes
             int spawnCount = Math.Max(1, (int)Math.Ceiling(pipePairs * 0.6));
-            int spawnStart = rightmost + minDungeonSpacing * 4; // push dungeon start further to the right
-            Debug.WriteLine($"Dungeon spawn: spawnCount={spawnCount}, spawnStart={spawnStart}, effectiveDungeonSpacing={effectiveDungeonSpacing}, minDungeonSpacing={minDungeonSpacing}");
+            int spawnStart = rightmost + minDungeonSpacing * 4;
 
             for (int i = 0; i < spawnCount; i++)
             {
@@ -352,7 +486,7 @@ namespace WindowsFormsApp1
                 {
                     var prevDT = dungeonTops[dungeonTops.Count - 1];
                     var prevDB = dungeonBottoms[dungeonBottoms.Count - 1];
-                    prevDungeonGapCenter = (prevDT.Height + prevDB.Top) / 2.0;
+                    prevDungeonGapCenter = (prevDT.Bottom + prevDB.Top) / 2.0;
                 }
                 else
                 {
@@ -362,7 +496,7 @@ namespace WindowsFormsApp1
                     {
                         int ni = pipeTops.IndexOf(nearestNormal);
                         if (ni >= 0 && ni < pipeBottoms.Count)
-                            prevDungeonGapCenter = (nearestNormal.Height + pipeBottoms[ni].Top) / 2.0;
+                            prevDungeonGapCenter = (nearestNormal.Bottom + pipeBottoms[ni].Top) / 2.0;
                     }
                 }
 
@@ -374,11 +508,10 @@ namespace WindowsFormsApp1
                 topH = gapCenter - effectiveGap / 2;
                 topH = Math.Max(minTopH, Math.Min(topH, maxTopH));
 
-                Debug.WriteLine($"Dungeon pipe #{i} gap: prevCenter={prevDungeonGapCenter:F0}, gapCenterRange=[{gapCenterMin},{gapCenterMax}], chosen={gapCenter}, topH={topH}");
-
-                top.Height = topH;
+                top.Top = -20;
+                top.Height = topH + 20;
                 bottom.Top = topH + effectiveGap;
-                bottom.Height = this.ClientSize.Height - bottom.Top;
+                bottom.Height = this.ClientSize.Height - bottom.Top + 20;
 
                 top.Name = "dungeonTop" + i + "_" + Guid.NewGuid().ToString("N");
                 bottom.Name = "dungeonBottom" + i + "_" + Guid.NewGuid().ToString("N");
@@ -391,8 +524,6 @@ namespace WindowsFormsApp1
                 // track dungeon pipes separately so they don't interfere with normal pipe respawn logic
                 dungeonTops.Add(top);
                 dungeonBottoms.Add(bottom);
-
-                Debug.WriteLine($"Created dungeon pipe #{i}: top={top.Name}, left={top.Left}, height={top.Height}, bottomTop={bottom.Top}, bottomHeight={bottom.Height}");
             }
             // Apply appearance (images/colors) to the newly created pipes
             ApplyPipeAppearance();
@@ -403,48 +534,20 @@ namespace WindowsFormsApp1
             {
                 dungeonRegionStart = dungeonTops.Min(p => p.Left);
                 dungeonRegionEnd = dungeonTops.Max(p => p.Left + p.Width);
-                Debug.WriteLine($"Dungeon region: start={dungeonRegionStart}, end={dungeonRegionEnd}");
             }
 
-            // Ensure bird and UI remain visible above pipes
+            // Ensure bird and HUD remain visible above pipes
             if (bird != null) bird.BringToFront();
-            if (scoreText != null) scoreText.BringToFront();
-            if (gameOverText != null) gameOverText.BringToFront();
-            Debug.WriteLine($"Dungeon pipes total: {dungeonTops.Count}");
+            if (scoreHud != null) scoreHud.BringToFront();
 
-            // apply appearance to dungeon pipes as well
-            bool useImage = (pipeImgLoaded != null);
+            // apply appearance to dungeon pipes
+            bool useCustomPaint = (pipeImgLoaded != null && pipeImgTopRotated != null);
             if (dungeonTops != null && dungeonTops.Count > 0)
             {
                 for (int i = 0; i < dungeonTops.Count; i++)
                 {
-                    var top = dungeonTops[i];
-                    var bottom = dungeonBottoms[i];
-                    if (useImage)
-                    {
-                        bottom.Image = pipeImgLoaded;
-                        bottom.SizeMode = PictureBoxSizeMode.StretchImage;
-                        bottom.BackColor = Color.Transparent;
-                        try
-                        {
-                            top.Image = pipeImgTopRotated ?? pipeImgLoaded;
-                            top.SizeMode = PictureBoxSizeMode.StretchImage;
-                            top.BackColor = Color.Transparent;
-                        }
-                        catch
-                        {
-                            top.Image = pipeImgLoaded;
-                            top.SizeMode = PictureBoxSizeMode.StretchImage;
-                            top.BackColor = Color.Transparent;
-                        }
-                    }
-                    else
-                    {
-                        top.Image = null;
-                        bottom.Image = null;
-                        top.BackColor = pipeColor;
-                        bottom.BackColor = pipeColor;
-                    }
+                    SetupPipePaint(dungeonTops[i], isTopPipe: true, useCustomPaint);
+                    SetupPipePaint(dungeonBottoms[i], isTopPipe: false, useCustomPaint);
                 }
             }
         }
@@ -455,8 +558,6 @@ namespace WindowsFormsApp1
             inDungeon = false;
             // restore normal spacing
             pipeSpacing = originalPipeSpacing;
-
-            Debug.WriteLine($"EndDungeon at {DateTime.Now:HH:mm:ss.fff}: dungeonTops={dungeonTops?.Count ?? 0}, dungeonBottoms={dungeonBottoms?.Count ?? 0}");
 
             // Instead of forcibly removing dungeon pipes immediately when the dungeon ends
             // (which can make them disappear before the player reaches them), delay final
@@ -473,7 +574,6 @@ namespace WindowsFormsApp1
 
                     if (top.Left < -pipeWidth)
                     {
-                        Debug.WriteLine($"Removing off-screen dungeon top: {top.Name}, left={top.Left}");
                         this.Controls.Remove(top);
                         if (bottom != null) this.Controls.Remove(bottom);
                         try { top.Dispose(); } catch { }
@@ -481,18 +581,10 @@ namespace WindowsFormsApp1
                         dungeonTops.RemoveAt(i);
                         if (bottom != null && i < dungeonBottoms.Count) dungeonBottoms.RemoveAt(i);
                     }
-                    else
-                    {
-                        Debug.WriteLine($"Keeping on-screen/upcoming dungeon top: {top.Name}, left={top.Left}");
-                    }
                 }
             }
 
-            // set a flag so we only fully remove any remaining dungeon pipes after the
-            // player (bird) has passed the last dungeon pipe. The movement loop will
-            // detect when that happens and finish cleanup.
             pendingDungeonCleanup = true;
-            Debug.WriteLine("EndDungeon complete - remaining dungeon pipes will be kept until player crosses the last one");
         }
 
         private void Form1_Load(object sender, EventArgs e)
@@ -523,9 +615,9 @@ namespace WindowsFormsApp1
             bird.Location = new Point((int)(56 * scale), (int)(200 * scale));
             bird.BringToFront();
 
-            // Try loading flappy-bird.png from the application folder first, then fall
-            // back to bird.png. If neither exists the yellow box remains visible.
-            string[] candidateNames = new[] { "flappy-bird.png", "bird.png" };
+            // Try loading bird images in priority order; first match wins.
+            // If none exist the yellow box remains visible.
+            string[] candidateNames = new[] { "flappy-bird_test.png", "flappy-bird.png", "bird.png" };
             foreach (var name in candidateNames)
             {
                 string imagePath = Path.Combine(Application.StartupPath, name);
@@ -541,6 +633,7 @@ namespace WindowsFormsApp1
                     // make the PictureBox huge and cause immediate collisions.
                     bird.Size = new Size((int)(45 * scale), (int)(32 * scale));
                     bird.BackColor = Color.Transparent;
+                    ApplyBirdRegion();
                     bird.BringToFront();
                     break; // loaded an image, stop searching
                 }
@@ -550,38 +643,46 @@ namespace WindowsFormsApp1
                 }
             }
 
-            // Create the game over label but keep it hidden until needed
-            gameOverText = new Label();
-            gameOverText.AutoSize = false;
-            gameOverText.Size = new Size((int)(400 * scale), (int)(60 * scale));
-            gameOverText.TextAlign = ContentAlignment.MiddleCenter;
-            gameOverText.Font = new Font("Microsoft Sans Serif", (float)(18 * scale), FontStyle.Bold, GraphicsUnit.Point, ((byte)(0)));
-            gameOverText.ForeColor = Color.Red;
-            gameOverText.BackColor = Color.Transparent;
-            gameOverText.Location = new Point((this.ClientSize.Width - gameOverText.Width) / 2, (this.ClientSize.Height - gameOverText.Height) / 2);
-            gameOverText.Text = "";
-            gameOverText.Visible = false;
+            // Load game over image (painted directly onto the overlay bitmap, not as a child control)
+            string gameOverPath = Path.Combine(Application.StartupPath, "Game-Over.png");
+            if (File.Exists(gameOverPath))
+            {
+                try { gameOverImg = Image.FromFile(gameOverPath); } catch { }
+            }
 
-            // Create in-game high score label next to the score
-            scoreText.Font = new Font("Microsoft Sans Serif", (float)(20.25 * scale), FontStyle.Regular, GraphicsUnit.Point, ((byte)(0)));
-            highScoreText = new Label();
-            highScoreText.AutoSize = true;
-            highScoreText.Font = new Font("Microsoft Sans Serif", (float)(14 * scale), FontStyle.Bold, GraphicsUnit.Point, ((byte)(0)));
-            highScoreText.ForeColor = Color.Gold;
-            highScoreText.BackColor = Color.Transparent;
-            highScoreText.Text = "Best: " + highScore;
-            highScoreText.Location = new Point(scoreText.Right + 20, scoreText.Top + 5);
-            this.Controls.Add(highScoreText);
-            highScoreText.BringToFront();
-            gameOverText.BringToFront();
-            this.Controls.Add(gameOverText);
+            // Overlay panel used during game over – shows a snapshot of the game
+            // state with a light dark tint so the player can see where the bird
+            // collided while keeping the Game Over UI readable.
+            // The Game Over image and restart text are painted directly onto the
+            // bitmap to avoid WinForms child-control transparency artifacts.
+            gameOverOverlay = new Panel();
+            gameOverOverlay.BackColor = Color.Transparent;
+            gameOverOverlay.Visible = false;
+            this.Controls.Add(gameOverOverlay);
+
+            // Hide the designer Label control – score/best are now rendered by
+            // the owner-drawn ScoreHud control which has a truly transparent
+            // background and sits on top of pipes in the Z-order.
+            scoreText.Visible = false;
+
+            // Create the owner-drawn score HUD
+            scoreHud = new ScoreHud();
+            scoreHud.ScoreFont = new Font("Microsoft Sans Serif", (float)(20.25 * scale), FontStyle.Regular);
+            scoreHud.BestFont = new Font("Microsoft Sans Serif", (float)(14 * scale), FontStyle.Bold);
+            scoreHud.ScoreStr = "Score: 0";
+            scoreHud.BestStr = "Best: " + highScore;
+            scoreHud.Location = Point.Empty;
+            scoreHud.Size = new Size(this.ClientSize.Width, (int)(50 * scale));
+            this.Controls.Add(scoreHud);
+            scoreHud.BringToFront();
 
             // create a pause button so user can pause the game to take screenshots
-            pauseButton = new Button();
-            pauseButton.Size = new Size((int)(80 * scale), (int)(30 * scale));
-            pauseButton.Font = new Font("Microsoft Sans Serif", (float)(8.25 * scale));
+            pauseButton = new ModernButton();
+            pauseButton.Size = new Size((int)(80 * scale), (int)(32 * scale));
+            pauseButton.Font = new Font("Segoe UI", (float)(8.25 * scale), FontStyle.Bold);
             pauseButton.Location = new Point(this.ClientSize.Width - pauseButton.Width - 10, 10);
             pauseButton.Text = "Pause";
+            pauseButton.CornerRadius = 12;
             pauseButton.Anchor = AnchorStyles.Top | AnchorStyles.Right;
             pauseButton.Click += PauseButton_Click;
             this.Controls.Add(pauseButton);
@@ -622,9 +723,10 @@ namespace WindowsFormsApp1
                     // set randomized heights
                     int topMax = Math.Max(41, this.ClientSize.Height - pipeGap - 80);
                     int topH = rnd.Next(40, topMax);
-                    pipeTop.Height = topH;
+                    pipeTop.Top = -20;
+                    pipeTop.Height = topH + 20;
                     pipeBottom.Top = topH + pipeGap;
-                    pipeBottom.Height = this.ClientSize.Height - pipeBottom.Top;
+                    pipeBottom.Height = this.ClientSize.Height - pipeBottom.Top + 20;
 
                     pipeTops.Add(pipeTop);
                     pipeBottoms.Add(pipeBottom);
@@ -645,9 +747,10 @@ namespace WindowsFormsApp1
                     bottom.Left = posX;
 
                     int topH = rnd.Next(40, this.ClientSize.Height - pipeGap - 80);
-                    top.Height = topH;
+                    top.Top = -20;
+                    top.Height = topH + 20;
                     bottom.Top = topH + pipeGap;
-                    bottom.Height = this.ClientSize.Height - bottom.Top;
+                    bottom.Height = this.ClientSize.Height - bottom.Top + 20;
 
                     top.Name = "pipeTop" + i;
                     bottom.Name = "pipeBottom" + i;
@@ -678,13 +781,12 @@ namespace WindowsFormsApp1
                 }
             }
 
-            // store loaded pipe image for later use
+            // store loaded pipe image and create a flipped copy for top pipes
             if (pipeImg != null)
             {
                 pipeImgLoaded = pipeImg;
                 try
                 {
-                    // create a single rotated copy for top pipes and reuse it to avoid per-control cloning
                     pipeImgTopRotated = (Image)pipeImgLoaded.Clone();
                     pipeImgTopRotated.RotateFlip(RotateFlipType.Rotate180FlipNone);
                 }
@@ -722,6 +824,23 @@ namespace WindowsFormsApp1
             originalPipeSpacing = pipeSpacing;
             // initialize dungeon trigger time so first dungeon happens after interval
             lastDungeonTrigger = DateTime.Now;
+
+            // Disable the low-resolution WinForms timer; use Application.Idle loop
+            gameTimer.Enabled = false;
+            gameTimer.Stop();
+
+            // Initialize floating-point accumulators
+            birdY = bird.Top;
+            verticalSpeedF = 0;
+            pipeMoveFrac = 0;
+
+            // Request 1ms timer resolution so Thread.Sleep(1) is accurate
+            timeBeginPeriod(1);
+
+            // Start the high-resolution game loop
+            gameLoopWatch = Stopwatch.StartNew();
+            gameLoopRunning = true;
+            Application.Idle += GameLoop_Idle;
         }
 
         private void bird_Click(object sender, EventArgs e)
@@ -729,14 +848,45 @@ namespace WindowsFormsApp1
 
         }
 
+        private void GameLoop_Idle(object sender, EventArgs e)
+        {
+            NativeMsg msg;
+            while (!PeekMessage(out msg, IntPtr.Zero, 0, 0, 0))
+            {
+                if (!gameLoopRunning || isGameOver)
+                    return;
+
+                double elapsedMs = gameLoopWatch.Elapsed.TotalMilliseconds;
+                if (elapsedMs >= TargetFrameMs)
+                {
+                    gameLoopWatch.Restart();
+                    frameDt = Math.Min(elapsedMs / BaseFrameMs, 2.0);
+                    gameTimer_Tick(this, EventArgs.Empty);
+                }
+                else
+                {
+                    // Yield CPU briefly while waiting for the next frame
+                    System.Threading.Thread.Sleep(1);
+                }
+            }
+        }
+
+        protected override void OnFormClosed(FormClosedEventArgs e)
+        {
+            gameLoopRunning = false;
+            Application.Idle -= GameLoop_Idle;
+            timeEndPeriod(1);
+            base.OnFormClosed(e);
+        }
+
         private void gameTimer_Tick(object sender, EventArgs e)
         {
             // compute target pipe speed based on score
             double targetSpeed = basePipeSpeed + (score / 5.0);
             targetSpeed = Math.Min(targetSpeed, basePipeSpeed + 12);
-            // smooth ramping (lerp) towards targetSpeed
-            currentPipeSpeed = Lerp(currentPipeSpeed, targetSpeed, 0.02);
-            int useSpeed = (int)Math.Round(currentPipeSpeed);
+            // smooth ramping (lerp) - scale factor by delta time
+            currentPipeSpeed = Lerp(currentPipeSpeed, targetSpeed, 0.02 * frameDt);
+            double useSpeed = currentPipeSpeed;
             // Dungeon trigger handling: every dungeonInterval seconds start a clustered region
             var now = DateTime.Now;
             if (!inDungeon && (now - lastDungeonTrigger) >= dungeonInterval)
@@ -750,7 +900,7 @@ namespace WindowsFormsApp1
                 EndDungeon();
             }
 
-            gameTimer_Tick(sender, e, useSpeed);
+            gameTickInner(useSpeed);
         }
 
         private double Lerp(double a, double b, double t)
@@ -758,45 +908,27 @@ namespace WindowsFormsApp1
             return a + (b - a) * t;
         }
 
-        private void gameTimer_Tick(object sender, EventArgs e, int pipeSpeed1)
+        private void gameTickInner(double pipeSpeed)
         {
-            Debug.WriteLine($"Tick: time={DateTime.Now:HH:mm:ss.fff}, pipeSpeed={pipeSpeed1}, inDungeon={inDungeon}, pendingDungeonCleanup={pendingDungeonCleanup}, pipeTops={pipeTops?.Count ?? 0}, dungeonTops={dungeonTops?.Count ?? 0}");
-
-            // Dump positions of normal pipes for debugging
-            try
-            {
-                if (pipeTops != null)
-                {
-                    for (int pi = 0; pi < pipeTops.Count; pi++)
-                    {
-                        var p = pipeTops[pi];
-                        Debug.WriteLine($"NormalPipe #{pi}: name={p.Name}, left={p.Left}, topH={p.Height}, bottomTop={(pipeBottoms.Count>pi?pipeBottoms[pi].Top:-1)}");
-                    }
-                }
-                if (dungeonTops != null)
-                {
-                    for (int di = 0; di < dungeonTops.Count; di++)
-                    {
-                        var d = dungeonTops[di];
-                        Debug.WriteLine($"DungeonPipe #{di}: name={d.Name}, left={d.Left}, topH={d.Height}, bottomTop={(dungeonBottoms.Count>di?dungeonBottoms[di].Top:-1)}");
-                    }
-                }
-            }
-            catch (Exception ex)
-            {
-                Debug.WriteLine("Tick dump error: " + ex);
-            }
             if (isGameOver)
                 return;
 
             // if pipe lists are empty, nothing to do
             if (pipeTops == null || pipeTops.Count == 0) return;
 
-            // apply gravity to vertical speed and move bird
-            verticalSpeed += gravity;
+            this.SuspendLayout();
+
+            // apply gravity with delta-time scaling and move bird using float accumulator
+            verticalSpeedF += gravity * frameDt;
             // cap vertical speed to avoid excessive fall velocity
-            verticalSpeed = Math.Min(verticalSpeed, maxFallSpeed);
-            bird.Top += verticalSpeed;
+            verticalSpeedF = Math.Min(verticalSpeedF, maxFallSpeed);
+            birdY += verticalSpeedF * frameDt;
+            bird.Top = (int)Math.Round(birdY);
+
+            // Compute integer pipe pixels to move this tick via sub-pixel accumulation
+            pipeMoveFrac += pipeSpeed * frameDt;
+            int pipeSpeed1 = (int)pipeMoveFrac;
+            pipeMoveFrac -= pipeSpeed1;
 
             // move all pipes and handle respawn/score
             // maintain a respawn cursor so multiple pipes that need respawning
@@ -819,36 +951,27 @@ namespace WindowsFormsApp1
                 var top = pipeTops[i];
                 var bottom = pipeBottoms[i];
 
-                Debug.WriteLine($"Moving normal pipe #{i}: name={top.Name}, beforeLeft={top.Left}");
                 top.Left -= pipeSpeed1;
                 bottom.Left -= pipeSpeed1;
-                Debug.WriteLine($"Moved normal pipe #{i}: name={top.Name}, afterLeft={top.Left}");
 
                 if (top.Left < -pipeWidth)
                 {
-                    Debug.WriteLine($"Respawn triggered for {top.Name}: currentLeft={top.Left}, respawnCursor={respawnCursor}");
                     // respawn behavior
                     // propose new position after the respawn cursor
                     int proposedLeft = respawnCursor + pipeSpacing;
-                    Debug.WriteLine($"Initial proposedLeft for respawn of {top.Name} = {proposedLeft} (respawnCursor={respawnCursor}, pipeSpacing={pipeSpacing})");
 
                     // enforce a minimum horizontal spacing between spawned normal pipes
-                    // to ensure the bird has room to travel between them. The minimum
-                    // spacing is three times the bird's width (as requested) but at
-                    // least the configured pipeSpacing.
                     int minNormalSpacing = pipeSpacing;
                     if (bird != null)
                     {
                         try { minNormalSpacing = Math.Max(minNormalSpacing, bird.Width * 3); } catch { }
                     }
-                    Debug.WriteLine($"minNormalSpacing={minNormalSpacing}, pipeSpacing={pipeSpacing}, birdWidth={(bird!=null?bird.Width:-1)}");
 
                     // if there are dungeon pipes present, ensure the proposedLeft does
                     // not overlap any dungeon pipe. Prefer placing before the first
                     // overlapping dungeon pipe if there's space; otherwise push the
                     // normal pipe to the right of the last overlapping dungeon pipe.
                     int buffer = 12; // extra spacing to avoid cap overlap
-                    Debug.WriteLine($"Checking overlaps with dungeon pipes: dungeonCount={dungeonTops?.Count ?? 0}, dungeonRegion=[{dungeonRegionStart},{dungeonRegionEnd}]");
                     if (dungeonTops != null && dungeonTops.Count > 0)
                     {
                         // iterate to resolve overlaps with multiple dungeon pipes
@@ -883,22 +1006,9 @@ namespace WindowsFormsApp1
                                     }
                                 }
                             }
-                            Debug.WriteLine($"Overlap attempt {attempt}: proposedLeft={proposedLeft}, changed={changed}");
                             if (!changed) break;
                         }
                     }
-                    Debug.WriteLine($"After dungeon adjustments proposedLeft={proposedLeft}");
-                    // dump nearby normal & dungeon pipes to help diagnose overlaps
-                    try
-                    {
-                        var nearbyNormals = pipeTops.Where(p => Math.Abs(p.Left - proposedLeft) < minNormalSpacing * 4)
-                                                     .Select(p => $"{p.Name}:{p.Left}").ToArray();
-                        var nearbyDungeons = (dungeonTops ?? new List<PictureBox>()).Where(d => Math.Abs(d.Left - proposedLeft) < minNormalSpacing * 6)
-                                                     .Select(d => $"{d.Name}:{d.Left}").ToArray();
-                        Debug.WriteLine($"Nearby normals: {string.Join(",", nearbyNormals)}");
-                        Debug.WriteLine($"Nearby dungeons: {string.Join(",", nearbyDungeons)}");
-                    }
-                    catch { }
 
                     // If the proposed position would fall inside the horizontal
                     // region occupied by the dungeon pipes (or too close to them),
@@ -967,22 +1077,10 @@ namespace WindowsFormsApp1
                     }
                     catch { }
 
-                    // Final diagnostics before assignment
-                    Debug.WriteLine($"Final proposedLeft for {top.Name} = {proposedLeft} (respawnCursor before assign={respawnCursor})");
-                    try
-                    {
-                        Debug.WriteLine($"DungeonRegion=[{dungeonRegionStart},{dungeonRegionEnd}], pendingDungeonCleanup={pendingDungeonCleanup}");
-                    }
-                    catch { }
-
                     // advance the cursor to avoid placing subsequent respawns at the same spot
-                    // and assign the final left to the pipe controls only after all
-                    // proposedLeft adjustments have been made.
                     respawnCursor = proposedLeft;
                     top.Left = proposedLeft;
                     bottom.Left = proposedLeft;
-
-                    Debug.WriteLine($"Assigned new left for {top.Name}: left={top.Left}");
 
                     int maxTopLimit = Math.Max(41, this.ClientSize.Height - pipeGap - 80);
                     int topHNormal;
@@ -993,7 +1091,6 @@ namespace WindowsFormsApp1
                     // never create an impossible vertical jump.
                     int maxShift = Math.Max(50, pipeGap / 2);
                     double prevGapCenter = this.ClientSize.Height / 2.0;
-                    string prevSource = "(default mid)";
 
                     // collect all pipes to the left of proposedLeft (the ones the
                     // bird flies through before reaching this pipe)
@@ -1032,20 +1129,17 @@ namespace WindowsFormsApp1
                         int bpIdx = pipeTops.IndexOf(bestPrev);
                         if (bpIdx >= 0 && bpIdx < pipeBottoms.Count)
                         {
-                            prevGapCenter = (bestPrev.Height + pipeBottoms[bpIdx].Top) / 2.0;
-                            prevSource = $"normal {bestPrev.Name}";
+                            prevGapCenter = (bestPrev.Bottom + pipeBottoms[bpIdx].Top) / 2.0;
                         }
                         else if (dungeonTops != null)
                         {
                             int dIdx = dungeonTops.IndexOf(bestPrev);
                             if (dIdx >= 0 && dIdx < dungeonBottoms.Count)
                             {
-                                prevGapCenter = (bestPrev.Height + dungeonBottoms[dIdx].Top) / 2.0;
-                                prevSource = $"dungeon {bestPrev.Name}";
+                                prevGapCenter = (bestPrev.Bottom + dungeonBottoms[dIdx].Top) / 2.0;
                             }
                         }
                     }
-                    Debug.WriteLine($"Respawn gap ref: prevSource={prevSource}, prevGapCenter={prevGapCenter:F0}, maxShift={maxShift}");
 
                     // pick a random gap center within the allowed shift range
                     int gcMin = (int)Math.Max(30 + pipeGap / 2, prevGapCenter - maxShift);
@@ -1053,13 +1147,12 @@ namespace WindowsFormsApp1
                     if (gcMin > gcMax) { gcMin = gcMax = this.ClientSize.Height / 2; }
                     int newGapCenter = rnd.Next(gcMin, gcMax + 1);
                     topHNormal = Math.Max(30, Math.Min(newGapCenter - pipeGap / 2, maxTopLimit));
-                    Debug.WriteLine($"Respawn gap result: gcRange=[{gcMin},{gcMax}], chosen={newGapCenter}, topHNormal={topHNormal}");
 
-                    top.Height = topHNormal;
+                    top.Top = -20;
+                    top.Height = topHNormal + 20;
                     bottom.Top = topHNormal + pipeGap;
-                    bottom.Height = this.ClientSize.Height - bottom.Top;
-
-                    Debug.WriteLine($"Final respawn {top.Name}: left={top.Left}, topH={top.Height}, bottomTop={bottom.Top}");
+                    // Extend bottom pipe past the form edge to hide stretched image cap artifact
+                    bottom.Height = this.ClientSize.Height - bottom.Top + 20;
 
                     score++;
                 }
@@ -1072,15 +1165,12 @@ namespace WindowsFormsApp1
                 {
                     var top = dungeonTops[i];
                     var bottom = dungeonBottoms[i];
-                    Debug.WriteLine($"Moving dungeon pipe #{i}: name={top.Name}, beforeLeft={top.Left}");
                     top.Left -= pipeSpeed1;
                     bottom.Left -= pipeSpeed1;
-                    Debug.WriteLine($"Moved dungeon pipe #{i}: name={top.Name}, afterLeft={top.Left}");
 
                     // if a dungeon pipe moves off-screen, remove it (cleanup early)
                     if (top.Left < -pipeWidth)
                     {
-                        Debug.WriteLine($"Dungeon pipe off-screen, removing: {top.Name}, left={top.Left}");
                         this.Controls.Remove(top);
                         this.Controls.Remove(bottom);
                         try { top.Dispose(); } catch { }
@@ -1098,7 +1188,6 @@ namespace WindowsFormsApp1
                     {
                         dungeonRegionStart = dungeonTops.Min(p => p.Left);
                         dungeonRegionEnd = dungeonTops.Max(p => p.Left + p.Width);
-                    Debug.WriteLine($"Recomputed dungeon region: start={dungeonRegionStart}, end={dungeonRegionEnd}");
                     }
                     catch
                     {
@@ -1119,10 +1208,8 @@ namespace WindowsFormsApp1
                 if (pendingDungeonCleanup && dungeonTops.Count > 0)
                 {
                     int rightmostDungeonEdge = dungeonTops.Max(p => p.Left + p.Width);
-                Debug.WriteLine($"PendingDungeonCleanup check: rightmostDungeonEdge={rightmostDungeonEdge}, bird.Left={bird?.Left ?? -1}");
                     if (rightmostDungeonEdge < bird.Left)
                     {
-                        Debug.WriteLine($"Player crossed last dungeon pipe (edge={rightmostDungeonEdge}), cleaning up remaining dungeon pipes.");
                         // remove all remaining dungeon pipes now
                         for (int i = dungeonTops.Count - 1; i >= 0; i--)
                         {
@@ -1149,13 +1236,14 @@ namespace WindowsFormsApp1
                 }
             }
 
-            scoreText.Text = "Score: " + score;
-
             // update high score live during gameplay
             if (score > highScore)
                 highScore = score;
-            if (highScoreText != null)
-                highScoreText.Text = "Best: " + highScore;
+            if (scoreHud != null)
+            {
+                scoreHud.ScoreStr = "Score: " + score;
+                scoreHud.BestStr = "Best: " + highScore;
+            }
 
             // Collision detection using shrunken hitboxes to match visible sprites
             var birdRect = bird.Bounds;
@@ -1205,41 +1293,117 @@ namespace WindowsFormsApp1
             {
                 GameOver();
             }
+
+            this.ResumeLayout(false);
+            this.Invalidate(true);
+            this.Update();
         }
 
         // button to return to main menu on game over
-        private Button btnMainMenu;
+        private ModernButton btnMainMenu;
+        private Panel gameOverOverlay;
 
         private void GameOver()
         {
             isGameOver = true;
             FinalScore = score;
-            gameTimer.Stop();
-            gameOverText.Text = "Game Over! Press R to restart";
-            // center the label in case window size changed
-            gameOverText.Location = new Point((this.ClientSize.Width - gameOverText.Width) / 2, (this.ClientSize.Height - gameOverText.Height) / 2);
-            gameOverText.Visible = true;
-            gameOverText.BringToFront();
+            gameLoopRunning = false;
 
-            // show main menu button
+            // Capture the current game state so the player can see where
+            // the bird collided, then paint the Game Over image and restart
+            // text directly onto the bitmap. This avoids WinForms child-
+            // control transparency artifacts (opaque rectangular backgrounds).
+            gameOverOverlay.Size = this.ClientSize;
+            gameOverOverlay.Location = Point.Empty;
+            int centerY = this.ClientSize.Height / 2;
+            int textBottomY = centerY + (int)(5 * scale) + (int)(60 * scale);
+            try
+            {
+                // Hide the HUD control so DrawToBitmap captures a clean scene;
+                // we paint score/best directly onto the bitmap below.
+                if (scoreHud != null) scoreHud.Visible = false;
+
+                var snap = new Bitmap(this.ClientSize.Width, this.ClientSize.Height);
+                this.DrawToBitmap(snap, new Rectangle(Point.Empty, this.ClientSize));
+
+                using (var g = Graphics.FromImage(snap))
+                {
+                    // Dark tint for contrast
+                    using (var brush = new SolidBrush(Color.FromArgb(100, 0, 0, 0)))
+                        g.FillRectangle(brush, 0, 0, snap.Width, snap.Height);
+
+                    g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.HighQuality;
+                    g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.AntiAliasGridFit;
+
+                    // Paint score and high score cleanly onto the bitmap
+                    Font sFont = scoreHud?.ScoreFont;
+                    Font bFont = scoreHud?.BestFont;
+                    string sStr = scoreHud?.ScoreStr ?? ("Score: " + score);
+                    string bStr = scoreHud?.BestStr ?? ("Best: " + highScore);
+                    if (sFont != null)
+                    {
+                        float sx = 13 * (float)scale;
+                        float sy = 10 * (float)scale;
+                        using (var shadow = new SolidBrush(Color.FromArgb(120, 0, 0, 0)))
+                            g.DrawString(sStr, sFont, shadow, sx + 1, sy + 1);
+                        using (var sBrush = new SolidBrush(Color.White))
+                            g.DrawString(sStr, sFont, sBrush, sx, sy);
+
+                        var scoreSz = g.MeasureString(sStr, sFont);
+                        float bx = sx + scoreSz.Width + 20;
+                        float by = sy + 5;
+                        if (bFont != null)
+                        {
+                            using (var shadow = new SolidBrush(Color.FromArgb(120, 0, 0, 0)))
+                                g.DrawString(bStr, bFont, shadow, bx + 1, by + 1);
+                            using (var hsBrush = new SolidBrush(Color.Gold))
+                                g.DrawString(bStr, bFont, hsBrush, bx, by);
+                        }
+                    }
+
+                    // Paint Game Over image
+                    if (gameOverImg != null)
+                    {
+                        int imgW = (int)(300 * scale);
+                        int imgH = (int)(120 * scale);
+                        int imgX = (this.ClientSize.Width - imgW) / 2;
+                        int imgY = centerY - imgH - (int)(5 * scale);
+                        g.DrawImage(gameOverImg, imgX, imgY, imgW, imgH);
+                    }
+
+                    // Paint "Press R to restart" text
+                    using (var font = new Font("Microsoft Sans Serif", (float)(18 * scale), FontStyle.Bold))
+                    using (var textBrush = new SolidBrush(Color.Red))
+                    {
+                        var textSize = g.MeasureString("Press R to restart", font);
+                        float textX = (this.ClientSize.Width - textSize.Width) / 2f;
+                        float textY = centerY + (int)(5 * scale);
+                        g.DrawString("Press R to restart", font, textBrush, textX, textY);
+                        textBottomY = (int)(textY + textSize.Height);
+                    }
+                }
+                var old = gameOverOverlay.BackgroundImage;
+                gameOverOverlay.BackgroundImage = snap;
+                gameOverOverlay.BackgroundImageLayout = ImageLayout.None;
+                old?.Dispose();
+            }
+            catch { }
+            gameOverOverlay.Visible = true;
+            gameOverOverlay.BringToFront();
+
+            // show main menu button (only interactive control needed on overlay)
             if (btnMainMenu == null)
             {
-                btnMainMenu = new Button();
+                btnMainMenu = new ModernButton();
                 btnMainMenu.Text = "Main Menu";
-                btnMainMenu.Font = new Font("Microsoft Sans Serif", (float)(11 * scale), FontStyle.Bold);
-                btnMainMenu.Size = new Size((int)(140 * scale), (int)(38 * scale));
-                btnMainMenu.FlatStyle = FlatStyle.Flat;
-                btnMainMenu.FlatAppearance.BorderColor = Color.White;
-                btnMainMenu.FlatAppearance.BorderSize = 2;
-                btnMainMenu.BackColor = Color.FromArgb(200, 34, 139, 34);
-                btnMainMenu.ForeColor = Color.White;
-                btnMainMenu.Cursor = Cursors.Hand;
+                btnMainMenu.Font = new Font("Segoe UI", (float)(11 * scale), FontStyle.Bold);
+                btnMainMenu.Size = new Size((int)(160 * scale), (int)(42 * scale));
                 btnMainMenu.Click += (s, args) => { this.Close(); };
-                this.Controls.Add(btnMainMenu);
+                gameOverOverlay.Controls.Add(btnMainMenu);
             }
             btnMainMenu.Location = new Point(
                 (this.ClientSize.Width - btnMainMenu.Width) / 2,
-                gameOverText.Bottom + 10);
+                textBottomY + 10);
             btnMainMenu.Visible = true;
             btnMainMenu.BringToFront();
         }
@@ -1249,13 +1413,23 @@ namespace WindowsFormsApp1
             // Reset core state
             isGameOver = false;
             score = 0;
-            scoreText.Text = "Score: " + score;
+            if (scoreHud != null) scoreHud.ScoreStr = "Score: 0";
+
+            // Restore score HUD visibility (hidden during game over snapshot)
+            if (scoreHud != null) scoreHud.Visible = true;
 
             // hide main menu button if visible
             if (btnMainMenu != null) btnMainMenu.Visible = false;
+            if (gameOverOverlay != null)
+            {
+                gameOverOverlay.Visible = false;
+                var oldBg = gameOverOverlay.BackgroundImage;
+                gameOverOverlay.BackgroundImage = null;
+                oldBg?.Dispose();
+            }
 
             // Stop timer while we reconstruct scene to avoid race with game loop
-            try { if (gameTimer != null) gameTimer.Stop(); } catch { }
+            gameLoopRunning = false;
 
             // Ensure pipe spacing restored to original value before rebuilding
             pipeSpacing = originalPipeSpacing;
@@ -1265,20 +1439,17 @@ namespace WindowsFormsApp1
             // influencing normal pipe respawn logic after restart.
             if (dungeonTops != null)
             {
-                Debug.WriteLine($"RestartGame: cleaning up {dungeonTops.Count} dungeon pipes");
                 for (int i = dungeonTops.Count - 1; i >= 0; i--)
                 {
                     var t = dungeonTops[i];
                     var b = (i < dungeonBottoms.Count) ? dungeonBottoms[i] : null;
                     if (t != null)
                     {
-                        Debug.WriteLine($" RestartGame removing dungeon top: {t.Name}, left={t.Left}");
                         this.Controls.Remove(t);
                         try { t.Dispose(); } catch { }
                     }
                     if (b != null)
                     {
-                        Debug.WriteLine($" RestartGame removing dungeon bottom: {b.Name}, top={b.Top}");
                         this.Controls.Remove(b);
                         try { b.Dispose(); } catch { }
                     }
@@ -1307,28 +1478,39 @@ namespace WindowsFormsApp1
                     top.Left = posX;
                     bottom.Left = posX;
                     int topH = rnd.Next(40, Math.Max(60, this.ClientSize.Height - pipeGap - 80));
-                    top.Height = topH;
+                    top.Top = -20;
+                    top.Height = topH + 20;
                     bottom.Top = topH + pipeGap;
-                    bottom.Height = this.ClientSize.Height - bottom.Top;
+                    bottom.Height = this.ClientSize.Height - bottom.Top + 20;
                 }
             }
 
             // Reset bird and physics
             bird.Location = new Point((int)(56 * scale), (int)(200 * scale));
-            verticalSpeed = 0;
+            birdY = bird.Top;
+            verticalSpeedF = 0;
+            pipeMoveFrac = 0;
 
             // Reset runtime speed and dungeon trigger timer so dungeons don't
             // immediately spawn at restart
             currentPipeSpeed = basePipeSpeed;
             lastDungeonTrigger = DateTime.Now;
 
-            gameOverText.Visible = false;
-
-            // Start the game loop
-            try { if (gameTimer != null) gameTimer.Start(); } catch { }
+            // Start the high-res game loop
+            gameLoopWatch.Restart();
+            gameLoopRunning = true;
         }
 
         private void Form1_KeyDown(object sender, KeyEventArgs e)
+        {
+            ProcessGameKeyDown(e);
+        }
+
+        /// <summary>
+        /// Processes game key input. Called directly by Form1_KeyDown and also
+        /// by the parent form when Form1 is embedded as a child control.
+        /// </summary>
+        public void ProcessGameKeyDown(KeyEventArgs e)
         {
             // Only handle specific keys explicitly. Do not treat other keys as pause.
             if (e.KeyCode == Keys.P && e.Modifiers == Keys.None)
@@ -1342,7 +1524,7 @@ namespace WindowsFormsApp1
             if (e.KeyCode == Keys.Space && !isGameOver)
             {
                 // give the bird an upward impulse
-                verticalSpeed = flapImpulse;
+                verticalSpeedF = flapImpulse;
                 e.SuppressKeyPress = true;
                 return;
             }
@@ -1357,19 +1539,23 @@ namespace WindowsFormsApp1
 
         private void Form1_KeyUp(object sender, KeyEventArgs e)
         {
-            // KeyUp handler (currently unused but required by designer)
+            // Suppress KeyUp for game keys so they don't reach child controls.
+            // Without this, ModernButton.OnKeyUp fires OnClick when Space is
+            // released while the pause button has focus, causing an auto-pause.
+            if (e.KeyCode == Keys.Space || e.KeyCode == Keys.P || e.KeyCode == Keys.R)
+            {
+                e.Handled = true;
+            }
         }
 
         private void PauseButton_Click(object sender, EventArgs e)
         {
-            // Toggle pause/resume by stopping/starting the game timer
+            // Toggle pause/resume by stopping/starting the high-res game loop
             try
             {
-                if (gameTimer == null) return;
-
-                if (gameTimer.Enabled)
+                if (gameLoopRunning)
                 {
-                    gameTimer.Stop();
+                    gameLoopRunning = false;
                     pauseButton.Text = "Resume";
                     if (pauseIndicator != null) pauseIndicator.Visible = true;
                     Debug.WriteLine($"Game paused at {DateTime.Now:HH:mm:ss.fff}");
@@ -1380,7 +1566,8 @@ namespace WindowsFormsApp1
                     if (isGameOver)
                         return;
 
-                    gameTimer.Start();
+                    gameLoopWatch.Restart();
+                    gameLoopRunning = true;
                     pauseButton.Text = "Pause";
                     if (pauseIndicator != null) pauseIndicator.Visible = false;
                     Debug.WriteLine($"Game resumed at {DateTime.Now:HH:mm:ss.fff}");

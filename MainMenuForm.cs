@@ -1,5 +1,6 @@
 using System;
 using System.Drawing;
+using System.Drawing.Drawing2D;
 using System.IO;
 using System.Windows.Forms;
 
@@ -7,13 +8,15 @@ namespace WindowsFormsApp1
 {
     public class MainMenuForm : Form
     {
-        private Button btnNewGame;
-        private Button btnOptions;
-        private Button btnAbout;
-        private Button btnExit;
-        private Label titleLabel;
+        private ModernButton btnNewGame;
+        private ModernButton btnOptions;
+        private ModernButton btnAbout;
+        private ModernButton btnExit;
+        private PictureBox logoPictureBox;
         private Label highScoreLabel;
         private int highScore = 0;
+        private Panel overlay;
+        private Form1 activeGame;
 
         // settings that can be changed in Options
         public int PipeGap { get; set; } = 120;
@@ -30,7 +33,7 @@ namespace WindowsFormsApp1
         private void InitializeMainMenu()
         {
             this.Text = "Flappy Bird";
-            this.ClientSize = new Size(800, 450);
+            this.ClientSize = GameResolution;
             IconHelper.SetFormIcon(this);
             this.StartPosition = FormStartPosition.CenterScreen;
             this.FormBorderStyle = FormBorderStyle.FixedSingle;
@@ -54,22 +57,24 @@ namespace WindowsFormsApp1
             }
 
             // semi-transparent overlay panel for menu readability
-            var overlay = new Panel();
-            overlay.Size = new Size(300, 360);
+            overlay = new Panel();
+            overlay.Size = new Size(300, 380);
             overlay.Location = new Point((this.ClientSize.Width - overlay.Width) / 2, (this.ClientSize.Height - overlay.Height) / 2);
             overlay.BackColor = Color.FromArgb(160, 0, 0, 0);
             this.Controls.Add(overlay);
 
-            // title
-            titleLabel = new Label();
-            titleLabel.Text = "Flappy Bird";
-            titleLabel.Font = new Font("Microsoft Sans Serif", 24F, FontStyle.Bold);
-            titleLabel.ForeColor = Color.Yellow;
-            titleLabel.BackColor = Color.Transparent;
-            titleLabel.AutoSize = true;
-            overlay.Controls.Add(titleLabel);
-            // center title after adding to get auto-sized width
-            titleLabel.Location = new Point((overlay.Width - titleLabel.PreferredWidth) / 2, 20);
+            // logo at the top of the menu
+            logoPictureBox = new PictureBox();
+            logoPictureBox.Size = new Size(260, 80);
+            logoPictureBox.SizeMode = PictureBoxSizeMode.Zoom;
+            logoPictureBox.BackColor = Color.Transparent;
+            logoPictureBox.Location = new Point((overlay.Width - logoPictureBox.Width) / 2, 12);
+            string logoPath = Path.Combine(Application.StartupPath, "mainmenu-logo.png");
+            if (File.Exists(logoPath))
+            {
+                try { logoPictureBox.Image = Image.FromFile(logoPath); } catch { }
+            }
+            overlay.Controls.Add(logoPictureBox);
 
             // high score display
             highScoreLabel = new Label();
@@ -79,11 +84,11 @@ namespace WindowsFormsApp1
             highScoreLabel.BackColor = Color.Transparent;
             highScoreLabel.AutoSize = true;
             overlay.Controls.Add(highScoreLabel);
-            highScoreLabel.Location = new Point((overlay.Width - highScoreLabel.PreferredWidth) / 2, 60);
+            highScoreLabel.Location = new Point((overlay.Width - highScoreLabel.PreferredWidth) / 2, 100);
 
             int buttonWidth = 200;
             int buttonHeight = 45;
-            int startY = 100;
+            int startY = 135;
             int spacing = 58;
             int buttonX = (overlay.Width - buttonWidth) / 2;
 
@@ -106,33 +111,70 @@ namespace WindowsFormsApp1
             btnExit = CreateMenuButton("Exit", buttonX, startY + spacing * 3, buttonWidth, buttonHeight);
             btnExit.Click += BtnExit_Click;
             overlay.Controls.Add(btnExit);
+
+            // Version watermark at bottom-right of the form
+            var versionLabel = new Label();
+            versionLabel.Text = "Flappy Bird version v1.0.2";
+            versionLabel.Font = new Font("Microsoft Sans Serif", 8F);
+            versionLabel.ForeColor = Color.FromArgb(180, 255, 255, 255);
+            versionLabel.BackColor = Color.Transparent;
+            versionLabel.AutoSize = true;
+            this.Controls.Add(versionLabel);
+            versionLabel.Location = new Point(
+                this.ClientSize.Width - versionLabel.PreferredWidth - 8,
+                this.ClientSize.Height - versionLabel.PreferredHeight - 6);
+            versionLabel.Anchor = AnchorStyles.Bottom | AnchorStyles.Right;
+            versionLabel.BringToFront();
         }
 
-        private Button CreateMenuButton(string text, int x, int y, int width, int height)
+        private void ApplyResolution()
         {
-            var btn = new Button();
+            this.ClientSize = GameResolution;
+            this.CenterToScreen();
+            if (overlay != null)
+            {
+                overlay.Location = new Point(
+                    (this.ClientSize.Width - overlay.Width) / 2,
+                    (this.ClientSize.Height - overlay.Height) / 2);
+            }
+        }
+
+        private ModernButton CreateMenuButton(string text, int x, int y, int width, int height)
+        {
+            var btn = new ModernButton();
             btn.Text = text;
-            btn.Font = new Font("Microsoft Sans Serif", 14F, FontStyle.Bold);
+            btn.Font = new Font("Segoe UI", 14F, FontStyle.Bold);
             btn.Size = new Size(width, height);
             btn.Location = new Point(x, y);
-            btn.FlatStyle = FlatStyle.Flat;
-            btn.FlatAppearance.BorderColor = Color.White;
-            btn.FlatAppearance.BorderSize = 2;
-            btn.BackColor = Color.FromArgb(200, 34, 139, 34); // forest green
-            btn.ForeColor = Color.White;
-            btn.Cursor = Cursors.Hand;
             return btn;
         }
 
         private void BtnNewGame_Click(object sender, EventArgs e)
         {
-            this.Hide();
-            var gameForm = new Form1(PipeGap, BasePipeSpeed, DungeonIntervalSeconds, highScore, GameResolution.Width, GameResolution.Height);
-            gameForm.FormClosed += (s, args) =>
+            // Hide menu overlay
+            overlay.Visible = false;
+
+            // Create Form1 and embed it as a child control in this window
+            activeGame = new Form1(PipeGap, BasePipeSpeed, DungeonIntervalSeconds, highScore, GameResolution.Width, GameResolution.Height);
+            activeGame.TopLevel = false;
+            activeGame.FormBorderStyle = FormBorderStyle.None;
+            activeGame.Dock = DockStyle.Fill;
+
+            activeGame.FormClosed += (s, args) =>
             {
-                if (gameForm.HighScore > highScore)
+                var closedGame = (Form1)s;
+
+                // Ignore if this handler belongs to a stale game instance
+                if (closedGame != activeGame)
                 {
-                    highScore = gameForm.HighScore;
+                    this.Controls.Remove(closedGame);
+                    closedGame.Dispose();
+                    return;
+                }
+
+                if (closedGame.HighScore > highScore)
+                {
+                    highScore = closedGame.HighScore;
                     Properties.Settings.Default.HighScore = highScore;
                     Properties.Settings.Default.Save();
                     highScoreLabel.Text = "High Score: " + highScore;
@@ -140,9 +182,33 @@ namespace WindowsFormsApp1
                         (highScoreLabel.Parent.Width - highScoreLabel.PreferredWidth) / 2,
                         highScoreLabel.Location.Y);
                 }
-                this.Show();
+
+                // Remove game and show menu again
+                this.Controls.Remove(activeGame);
+                activeGame.Dispose();
+                activeGame = null;
+                this.KeyPreview = false;
+                overlay.Visible = true;
             };
-            gameForm.Show();
+
+            this.Controls.Add(activeGame);
+            activeGame.BringToFront();
+            activeGame.Show();
+            activeGame.Focus();
+
+            // Forward key events from the top-level form to the embedded game
+            this.KeyPreview = true;
+        }
+
+        protected override void OnKeyDown(KeyEventArgs e)
+        {
+            if (activeGame != null && activeGame.Visible)
+            {
+                // Forward the key event to Form1's KeyDown handler
+                activeGame.ProcessGameKeyDown(e);
+                if (e.SuppressKeyPress) return;
+            }
+            base.OnKeyDown(e);
         }
 
         private void BtnOptions_Click(object sender, EventArgs e)
@@ -155,6 +221,7 @@ namespace WindowsFormsApp1
                     BasePipeSpeed = optionsForm.BasePipeSpeed;
                     DungeonIntervalSeconds = optionsForm.DungeonIntervalSeconds;
                     GameResolution = optionsForm.Resolution;
+                    ApplyResolution();
                 }
             }
         }
