@@ -10,6 +10,7 @@ using System.IO;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Windows.Forms;
+using System.Threading;
 
 namespace WindowsFormsApp1
 {
@@ -22,6 +23,8 @@ namespace WindowsFormsApp1
         private int verticalSpeed = 0;
         private int score = 0;
         private bool isGameOver = false;
+        // Bird hovers until the player's first Space press
+        private bool waitingForFirstInput = true;
 
         /// <summary>The score achieved when the game ended.</summary>
         public int FinalScore { get; private set; }
@@ -39,6 +42,10 @@ namespace WindowsFormsApp1
         // multiple pipe pairs
         private List<PictureBox> pipeTops;
         private List<PictureBox> pipeBottoms;
+        // Tracks which normal pipe pairs the bird has already scored through
+        private HashSet<PictureBox> scoredPipes = new HashSet<PictureBox>();
+        // Tracks which dungeon pipe pairs the bird has already scored through
+        private HashSet<PictureBox> scoredDungeonPipes = new HashSet<PictureBox>();
         // dungeon-added pipe pairs (temporary during a dungeon)
         private List<PictureBox> dungeonTops;
         private List<PictureBox> dungeonBottoms;
@@ -78,6 +85,18 @@ namespace WindowsFormsApp1
         private int flapImpulse = -12;
         private int maxFallSpeed = 10;
 
+        // Sound effect file paths
+        private string sfxFlap;
+        private string sfxScore;
+        private string sfxFail;
+
+        // Background-thread sound engine: a hidden Form on its own thread
+        // provides the Windows message pump that MCI requires.
+        private Form soundForm;
+        private volatile bool soundReady;
+        // Cooldown to skip redundant rapid flap sounds (held Space)
+        private long lastFlapTicks;
+
         // High-resolution game loop (~60 Hz) replacing WinForms Timer (~50 Hz max)
         private const double TargetFrameMs = 1000.0 / 60.0;   // ~16.67ms per frame
         private const double BaseFrameMs = 33.0;               // original design tick rate used to keep physics speed consistent
@@ -114,14 +133,19 @@ namespace WindowsFormsApp1
         [DllImport("winmm.dll")]
         private static extern uint timeEndPeriod(uint uMilliseconds);
 
+        [DllImport("winmm.dll", CharSet = CharSet.Unicode)]
+        private static extern int mciSendString(string command, StringBuilder buffer, int bufferSize, IntPtr callback);
+
         public Form1()
         {
             InitializeComponent();
+            InitSounds();
         }
 
         public Form1(int pipeGapSetting, int baseSpeedSetting, int dungeonIntervalSetting, int currentHighScore = 0, int resolutionWidth = 800, int resolutionHeight = 450)
         {
             InitializeComponent();
+            InitSounds();
             pipeGap = pipeGapSetting;
             basePipeSpeed = baseSpeedSetting;
             dungeonInterval = TimeSpan.FromSeconds(dungeonIntervalSetting);
@@ -676,18 +700,6 @@ namespace WindowsFormsApp1
             this.Controls.Add(scoreHud);
             scoreHud.BringToFront();
 
-            // create a pause button so user can pause the game to take screenshots
-            pauseButton = new ModernButton();
-            pauseButton.Size = new Size((int)(80 * scale), (int)(32 * scale));
-            pauseButton.Font = new Font("Segoe UI", (float)(8.25 * scale), FontStyle.Bold);
-            pauseButton.Location = new Point(this.ClientSize.Width - pauseButton.Width - 10, 10);
-            pauseButton.Text = "Pause";
-            pauseButton.CornerRadius = 12;
-            pauseButton.Anchor = AnchorStyles.Top | AnchorStyles.Right;
-            pauseButton.Click += PauseButton_Click;
-            this.Controls.Add(pauseButton);
-            pauseButton.BringToFront();
-
             // create an on-screen pause indicator for easy screenshots
             pauseIndicator = new Label();
             pauseIndicator.Size = new Size((int)(220 * scale), (int)(80 * scale));
@@ -876,6 +888,7 @@ namespace WindowsFormsApp1
             gameLoopRunning = false;
             Application.Idle -= GameLoop_Idle;
             timeEndPeriod(1);
+            DisposeSounds();
             base.OnFormClosed(e);
         }
 
@@ -915,6 +928,10 @@ namespace WindowsFormsApp1
 
             // if pipe lists are empty, nothing to do
             if (pipeTops == null || pipeTops.Count == 0) return;
+
+            // While waiting for first input, keep rendering but don't run physics
+            if (waitingForFirstInput)
+                return;
 
             this.SuspendLayout();
 
@@ -1154,7 +1171,8 @@ namespace WindowsFormsApp1
                     // Extend bottom pipe past the form edge to hide stretched image cap artifact
                     bottom.Height = this.ClientSize.Height - bottom.Top + 20;
 
-                    score++;
+                    // Pipe respawned — allow it to be scored again
+                    scoredPipes.Remove(top);
                 }
             }
 
@@ -1228,6 +1246,7 @@ namespace WindowsFormsApp1
                         }
                         dungeonTops.Clear();
                         dungeonBottoms.Clear();
+                        scoredDungeonPipes.Clear();
                         pendingDungeonCleanup = false;
                             // reset recorded dungeon region
                             dungeonRegionStart = int.MaxValue;
@@ -1243,6 +1262,38 @@ namespace WindowsFormsApp1
             {
                 scoreHud.ScoreStr = "Score: " + score;
                 scoreHud.BestStr = "Best: " + highScore;
+            }
+
+            // Score when the bird's center crosses the center of each pipe pair
+            int birdCenterX = bird.Left + bird.Width / 2;
+            for (int i = 0; i < pipeTops.Count; i++)
+            {
+                var top = pipeTops[i];
+                if (scoredPipes.Contains(top)) continue;
+                int pipeCenterX = top.Left + top.Width / 2;
+                if (birdCenterX >= pipeCenterX)
+                {
+                    score++;
+                    scoredPipes.Add(top);
+                    PlaySound("score");
+                }
+            }
+
+            // Score dungeon pipes the same way
+            if (dungeonTops != null)
+            {
+                for (int i = 0; i < dungeonTops.Count; i++)
+                {
+                    var top = dungeonTops[i];
+                    if (scoredDungeonPipes.Contains(top)) continue;
+                    int pipeCenterX = top.Left + top.Width / 2;
+                    if (birdCenterX >= pipeCenterX)
+                    {
+                        score++;
+                        scoredDungeonPipes.Add(top);
+                        PlaySound("score");
+                    }
+                }
             }
 
             // Collision detection using shrunken hitboxes to match visible sprites
@@ -1308,6 +1359,7 @@ namespace WindowsFormsApp1
             isGameOver = true;
             FinalScore = score;
             gameLoopRunning = false;
+            PlaySound("fail");
 
             // Capture the current game state so the player can see where
             // the bird collided, then paint the Game Over image and restart
@@ -1413,6 +1465,7 @@ namespace WindowsFormsApp1
             // Reset core state
             isGameOver = false;
             score = 0;
+            scoredPipes.Clear();
             if (scoreHud != null) scoreHud.ScoreStr = "Score: 0";
 
             // Restore score HUD visibility (hidden during game over snapshot)
@@ -1457,6 +1510,7 @@ namespace WindowsFormsApp1
                 dungeonTops.Clear();
                 dungeonBottoms.Clear();
             }
+            scoredDungeonPipes.Clear();
             pendingDungeonCleanup = false;
             inDungeon = false;
             dungeonRegionStart = int.MaxValue;
@@ -1490,6 +1544,7 @@ namespace WindowsFormsApp1
             birdY = bird.Top;
             verticalSpeedF = 0;
             pipeMoveFrac = 0;
+            waitingForFirstInput = true;
 
             // Reset runtime speed and dungeon trigger timer so dungeons don't
             // immediately spawn at restart
@@ -1500,6 +1555,97 @@ namespace WindowsFormsApp1
             gameLoopWatch.Restart();
             gameLoopRunning = true;
         }
+
+        // ---- Sound helpers (background-thread MCI with message pump) ----
+
+        private void InitSounds()
+        {
+            sfxFlap = Path.Combine(Application.StartupPath, "Bird-fly.mp3");
+            sfxScore = Path.Combine(Application.StartupPath, "Point-pipe.mp3");
+            sfxFail = Path.Combine(Application.StartupPath, "Bird-fail.mp3");
+
+            var ready = new ManualResetEventSlim(false);
+            var t = new Thread(() =>
+            {
+                // Create a hidden form to get a message pump on this thread
+                soundForm = new Form
+                {
+                    ShowInTaskbar = false,
+                    FormBorderStyle = FormBorderStyle.None,
+                    Size = new Size(1, 1),
+                    StartPosition = FormStartPosition.Manual,
+                    Location = new Point(-32000, -32000),
+                    Opacity = 0
+                };
+                soundForm.Load += (s, e) =>
+                {
+                    // Open MCI aliases on this thread (MCI is thread-affine)
+                    if (File.Exists(sfxFlap))
+                        mciSendString($"open \"{sfxFlap}\" type mpegvideo alias flap", null, 0, IntPtr.Zero);
+                    if (File.Exists(sfxScore))
+                        mciSendString($"open \"{sfxScore}\" type mpegvideo alias score", null, 0, IntPtr.Zero);
+                    if (File.Exists(sfxFail))
+                        mciSendString($"open \"{sfxFail}\" type mpegvideo alias fail", null, 0, IntPtr.Zero);
+                    soundReady = true;
+                    ready.Set();
+                };
+                Application.Run(soundForm); // pumps messages until soundForm is closed
+            })
+            {
+                IsBackground = true,
+                Name = "SFX"
+            };
+            t.SetApartmentState(ApartmentState.STA);
+            t.Start();
+            ready.Wait(2000); // wait up to 2s for aliases to open
+            ready.Dispose();
+        }
+
+        private void PlaySound(string alias)
+        {
+            if (!soundReady || soundForm == null || soundForm.IsDisposed) return;
+
+            // Flap cooldown: skip if last flap was < 80ms ago to prevent queue flooding
+            if (alias == "flap")
+            {
+                long now = Stopwatch.GetTimestamp();
+                long prev = Interlocked.Exchange(ref lastFlapTicks, now);
+                double elapsedMs = (now - prev) * 1000.0 / Stopwatch.Frequency;
+                if (elapsedMs < 80) return;
+            }
+
+            // Marshal to the sound thread (non-blocking from UI thread)
+            try
+            {
+                soundForm.BeginInvoke((Action)(() =>
+                {
+                    mciSendString($"seek {alias} to start", null, 0, IntPtr.Zero);
+                    mciSendString($"play {alias}", null, 0, IntPtr.Zero);
+                }));
+            }
+            catch (InvalidOperationException) { } // form disposed
+        }
+
+        private void DisposeSounds()
+        {
+            soundReady = false;
+            if (soundForm != null && !soundForm.IsDisposed)
+            {
+                try
+                {
+                    soundForm.Invoke((Action)(() =>
+                    {
+                        mciSendString("close flap", null, 0, IntPtr.Zero);
+                        mciSendString("close score", null, 0, IntPtr.Zero);
+                        mciSendString("close fail", null, 0, IntPtr.Zero);
+                        soundForm.Close();
+                    }));
+                }
+                catch { }
+            }
+        }
+
+        // ---- Key input ----
 
         private void Form1_KeyDown(object sender, KeyEventArgs e)
         {
@@ -1523,8 +1669,15 @@ namespace WindowsFormsApp1
 
             if (e.KeyCode == Keys.Space && !isGameOver)
             {
+                // First Space press starts the game
+                if (waitingForFirstInput)
+                {
+                    waitingForFirstInput = false;
+                    gameLoopWatch.Restart(); // reset timer so first frame isn't huge
+                }
                 // give the bird an upward impulse
                 verticalSpeedF = flapImpulse;
+                PlaySound("flap");
                 e.SuppressKeyPress = true;
                 return;
             }
@@ -1556,7 +1709,6 @@ namespace WindowsFormsApp1
                 if (gameLoopRunning)
                 {
                     gameLoopRunning = false;
-                    pauseButton.Text = "Resume";
                     if (pauseIndicator != null) pauseIndicator.Visible = true;
                     Debug.WriteLine($"Game paused at {DateTime.Now:HH:mm:ss.fff}");
                 }
@@ -1568,7 +1720,6 @@ namespace WindowsFormsApp1
 
                     gameLoopWatch.Restart();
                     gameLoopRunning = true;
-                    pauseButton.Text = "Pause";
                     if (pauseIndicator != null) pauseIndicator.Visible = false;
                     Debug.WriteLine($"Game resumed at {DateTime.Now:HH:mm:ss.fff}");
                 }

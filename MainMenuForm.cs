@@ -114,7 +114,7 @@ namespace WindowsFormsApp1
 
             // Version watermark at bottom-right of the form
             var versionLabel = new Label();
-            versionLabel.Text = "Flappy Bird version v1.0.2";
+            versionLabel.Text = "Flappy Bird version v1.0.3";
             versionLabel.Font = new Font("Microsoft Sans Serif", 8F);
             versionLabel.ForeColor = Color.FromArgb(180, 255, 255, 255);
             versionLabel.BackColor = Color.Transparent;
