@@ -644,7 +644,7 @@ namespace WindowsFormsApp1
             string[] candidateNames = new[] { "flappy-bird_test.png", "flappy-bird.png", "bird.png" };
             foreach (var name in candidateNames)
             {
-                string imagePath = Path.Combine(Application.StartupPath, name);
+                string imagePath = AssetPath.Image(name);
                 if (!File.Exists(imagePath))
                     continue;
 
@@ -668,7 +668,7 @@ namespace WindowsFormsApp1
             }
 
             // Load game over image (painted directly onto the overlay bitmap, not as a child control)
-            string gameOverPath = Path.Combine(Application.StartupPath, "Game-Over.png");
+            string gameOverPath = AssetPath.Image("Game-Over.png");
             if (File.Exists(gameOverPath))
             {
                 try { gameOverImg = Image.FromFile(gameOverPath); } catch { }
@@ -780,7 +780,7 @@ namespace WindowsFormsApp1
             }
             // Try loading a pipe image to use for visual variation
             Image pipeImg = null;
-            string pipePath = Path.Combine(Application.StartupPath, "pipe.png");
+            string pipePath = AssetPath.Image("pipe.png");
             if (File.Exists(pipePath))
             {
                 try
@@ -815,7 +815,7 @@ namespace WindowsFormsApp1
             this.DoubleBuffered = true;
 
             // Try loading a background image from the application folder
-            string bgPath = Path.Combine(Application.StartupPath, "background.png");
+            string bgPath = AssetPath.Image("background.png");
             if (File.Exists(bgPath))
             {
                 try
@@ -1560,9 +1560,9 @@ namespace WindowsFormsApp1
 
         private void InitSounds()
         {
-            sfxFlap = Path.Combine(Application.StartupPath, "Bird-fly.mp3");
-            sfxScore = Path.Combine(Application.StartupPath, "Point-pipe.mp3");
-            sfxFail = Path.Combine(Application.StartupPath, "Bird-fail.mp3");
+            sfxFlap = AssetPath.Sound("Bird-fly.mp3");
+            sfxScore = AssetPath.Sound("Point-pipe.mp3");
+            sfxFail = AssetPath.Sound("Bird-fail.mp3");
 
             var ready = new ManualResetEventSlim(false);
             var t = new Thread(() =>

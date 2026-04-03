@@ -41,7 +41,7 @@ namespace WindowsFormsApp1
             this.DoubleBuffered = true;
 
             // try loading background image
-            string bgPath = Path.Combine(Application.StartupPath, "background.png");
+            string bgPath = AssetPath.Image("background.png");
             if (File.Exists(bgPath))
             {
                 try
@@ -69,7 +69,7 @@ namespace WindowsFormsApp1
             logoPictureBox.SizeMode = PictureBoxSizeMode.Zoom;
             logoPictureBox.BackColor = Color.Transparent;
             logoPictureBox.Location = new Point((overlay.Width - logoPictureBox.Width) / 2, 12);
-            string logoPath = Path.Combine(Application.StartupPath, "mainmenu-logo.png");
+            string logoPath = AssetPath.Image("mainmenu-logo.png");
             if (File.Exists(logoPath))
             {
                 try { logoPictureBox.Image = Image.FromFile(logoPath); } catch { }

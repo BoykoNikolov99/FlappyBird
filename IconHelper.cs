@@ -16,7 +16,7 @@ namespace WindowsFormsApp1
             {
                 if (_appIcon == null)
                 {
-                    string path = Path.Combine(Application.StartupPath, "flappy-bird.png");
+                    string path = AssetPath.Image("flappy-bird.png");
                     if (File.Exists(path))
                     {
                         try
