@@ -26,11 +26,14 @@ Navigate your bird through an endless stream of pipes, survive surprise **dungeo
 | Feature | Description |
 |---|---|
 | **Main Menu** | Clean menu with New Game, Options, About, and Exit |
+| **Sound Effects** | Flap, score, and death sounds (MP3) with lag-free background playback |
 | **Dungeon Mode** | Periodic bursts of tightly-clustered pipes for extra challenge |
+| **Transparent Game Over** | See exactly where you crashed with a darkened overlay |
 | **Options Screen** | Adjust pipe gap, base speed, and dungeon interval with sliders |
-| **High Score Tracking** | Best score is tracked across games within a session |
+| **High Score Tracking** | Best score is saved across sessions |
 | **Custom Sprites** | Supports custom bird, pipe, and background images |
-| **Pause / Resume** | Press **P** or click the Pause button anytime |
+| **Pause / Resume** | Press **P** anytime to pause |
+| **Wait-for-Input Start** | Bird hovers until your first flap — no more instant deaths |
 | **Smooth Difficulty Curve** | Speed ramps up gradually using linear interpolation |
 
 ---
@@ -48,7 +51,7 @@ Navigate your bird through an endless stream of pipes, survive surprise **dungeo
 ## 📥 Download & Play
 
 1. Go to the [**Releases**](https://github.com/BoykoNikolov99/FlappyBird/releases) page
-2. Download the latest **FlappyBird-v1.0.1.zip**
+2. Download the latest **FlappyBird-v1.0.3.zip**
 3. Extract the zip to any folder
 4. Run **FlappyBird.exe**
 5. Flap away! 🐦
@@ -87,12 +90,17 @@ You can customise the difficulty from the **Options** menu before starting a gam
 ├── Program.cs              # Application entry point
 ├── MainMenuForm.cs         # Main menu with navigation
 ├── Form1.cs / .Designer.cs # Core game logic and UI
+├── ScoreHud.cs             # Owner-drawn transparent score overlay
+├── ModernButton.cs         # Custom rounded gradient button
 ├── OptionsForm.cs          # Difficulty settings screen
 ├── AboutForm.cs            # About / credits screen
 ├── IconHelper.cs           # Shared window icon loader
 ├── flappy-bird.png         # Bird sprite (also used as window icon)
 ├── pipe.png                # Pipe sprite
-└── background.png          # Background image
+├── background.png          # Background image
+├── Bird-fly.mp3            # Flap sound effect
+├── Bird-fail.mp3           # Death sound effect
+└── Point-pipe.mp3          # Score sound effect
 ```
 
 ---
