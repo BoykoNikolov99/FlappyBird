@@ -641,7 +641,7 @@ namespace WindowsFormsApp1
 
             // Try loading bird images in priority order; first match wins.
             // If none exist the yellow box remains visible.
-            string[] candidateNames = new[] { "flappy-bird_test.png", "flappy-bird.png", "bird.png" };
+            string[] candidateNames = new[] { "flappy-bird.png", "bird.png" };
             foreach (var name in candidateNames)
             {
                 string imagePath = AssetPath.Image(name);

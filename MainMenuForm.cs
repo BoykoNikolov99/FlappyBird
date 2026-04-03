@@ -18,6 +18,11 @@ namespace WindowsFormsApp1
         private Panel overlay;
         private Form1 activeGame;
 
+        // Persistent high score file in a stable location
+        private static readonly string SaveDir = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "FlappyBird");
+        private static readonly string SaveFile = Path.Combine(SaveDir, "highscore.txt");
+
         // settings that can be changed in Options
         public int PipeGap { get; set; } = 120;
         public int BasePipeSpeed { get; set; } = 6;
@@ -26,7 +31,7 @@ namespace WindowsFormsApp1
 
         public MainMenuForm()
         {
-            highScore = Properties.Settings.Default.HighScore;
+            highScore = LoadHighScore();
             InitializeMainMenu();
         }
 
@@ -114,7 +119,7 @@ namespace WindowsFormsApp1
 
             // Version watermark at bottom-right of the form
             var versionLabel = new Label();
-            versionLabel.Text = "Flappy Bird version v1.0.3";
+            versionLabel.Text = "Flappy Bird version v1.0.3.1";
             versionLabel.Font = new Font("Microsoft Sans Serif", 8F);
             versionLabel.ForeColor = Color.FromArgb(180, 255, 255, 255);
             versionLabel.BackColor = Color.Transparent;
@@ -175,8 +180,7 @@ namespace WindowsFormsApp1
                 if (closedGame.HighScore > highScore)
                 {
                     highScore = closedGame.HighScore;
-                    Properties.Settings.Default.HighScore = highScore;
-                    Properties.Settings.Default.Save();
+                    SaveHighScore(highScore);
                     highScoreLabel.Text = "High Score: " + highScore;
                     highScoreLabel.Location = new Point(
                         (highScoreLabel.Parent.Width - highScoreLabel.PreferredWidth) / 2,
@@ -237,6 +241,31 @@ namespace WindowsFormsApp1
         private void BtnExit_Click(object sender, EventArgs e)
         {
             Application.Exit();
+        }
+
+        private static int LoadHighScore()
+        {
+            try
+            {
+                if (File.Exists(SaveFile))
+                {
+                    string text = File.ReadAllText(SaveFile).Trim();
+                    if (int.TryParse(text, out int value))
+                        return value;
+                }
+            }
+            catch { }
+            return 0;
+        }
+
+        private static void SaveHighScore(int score)
+        {
+            try
+            {
+                Directory.CreateDirectory(SaveDir);
+                File.WriteAllText(SaveFile, score.ToString());
+            }
+            catch { }
         }
     }
 }

@@ -32,7 +32,7 @@ namespace WindowsFormsApp1
             titleLabel.Location = new Point((this.ClientSize.Width - titleLabel.PreferredWidth) / 2, 20);
 
             var versionLabel = new Label();
-            versionLabel.Text = "Version v1.0.3";
+            versionLabel.Text = "Version v1.0.3.1";
             versionLabel.Font = new Font("Microsoft Sans Serif", 11F);
             versionLabel.ForeColor = Color.LightGray;
             versionLabel.BackColor = Color.Transparent;

@@ -10,14 +10,21 @@ namespace WindowsFormsApp1
     /// </summary>
     internal static class AssetPath
     {
-        private static readonly string Root = Application.StartupPath;
-        private static readonly string ImagesDir = Path.Combine(Root, "Assets", "Images");
-        private static readonly string SoundsDir = Path.Combine(Root, "Assets", "Sounds");
+        private static string _root;
+        private static string Root
+        {
+            get
+            {
+                if (_root == null)
+                    _root = Application.StartupPath;
+                return _root;
+            }
+        }
 
         /// <summary>Resolve an image file (png, etc.).</summary>
         public static string Image(string fileName)
         {
-            string sub = Path.Combine(ImagesDir, fileName);
+            string sub = Path.Combine(Root, "Assets", "Images", fileName);
             if (File.Exists(sub)) return sub;
             return Path.Combine(Root, fileName);
         }
@@ -25,7 +32,7 @@ namespace WindowsFormsApp1
         /// <summary>Resolve a sound file (mp3, wav, etc.).</summary>
         public static string Sound(string fileName)
         {
-            string sub = Path.Combine(SoundsDir, fileName);
+            string sub = Path.Combine(Root, "Assets", "Sounds", fileName);
             if (File.Exists(sub)) return sub;
             return Path.Combine(Root, fileName);
         }
