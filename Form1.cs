@@ -89,6 +89,13 @@ namespace WindowsFormsApp1
             highScore = currentHighScore;
             resWidth = resolutionWidth;
             resHeight = resolutionHeight;
+
+            // Apply resolution immediately after InitializeComponent so AutoScaleMode
+            // does not override our ClientSize during the Load event.
+            this.AutoScaleMode = AutoScaleMode.None;
+            this.ClientSize = new Size(resWidth, resHeight);
+            this.FormBorderStyle = FormBorderStyle.FixedSingle;
+            this.MaximizeBox = false;
         }
 
         private void ApplyPipeAppearance()
@@ -496,9 +503,6 @@ namespace WindowsFormsApp1
 
             // Apply resolution and compute scale factor (base design = 800×450)
             scale = resWidth / 800.0;
-            this.ClientSize = new Size(resWidth, resHeight);
-            this.FormBorderStyle = FormBorderStyle.FixedSingle;
-            this.MaximizeBox = false;
 
             // Scale game constants to match resolution
             pipeWidth = (int)(100 * scale);
