@@ -9,6 +9,7 @@ namespace WindowsFormsApp1
         private TrackBar trackPipeGap;
         private TrackBar trackSpeed;
         private TrackBar trackDungeon;
+        private ComboBox cmbResolution;
         private Label lblGapValue;
         private Label lblSpeedValue;
         private Label lblDungeonValue;
@@ -18,19 +19,21 @@ namespace WindowsFormsApp1
         public int PipeGap { get; private set; }
         public int BasePipeSpeed { get; private set; }
         public int DungeonIntervalSeconds { get; private set; }
+        public Size Resolution { get; private set; }
 
-        public OptionsForm(int pipeGap, int basePipeSpeed, int dungeonInterval)
+        public OptionsForm(int pipeGap, int basePipeSpeed, int dungeonInterval, Size resolution)
         {
             PipeGap = pipeGap;
             BasePipeSpeed = basePipeSpeed;
             DungeonIntervalSeconds = dungeonInterval;
+            Resolution = resolution;
             InitializeOptions();
         }
 
         private void InitializeOptions()
         {
             this.Text = "Options";
-            this.ClientSize = new Size(420, 340);
+            this.ClientSize = new Size(420, 420);
             IconHelper.SetFormIcon(this);
             this.StartPosition = FormStartPosition.CenterParent;
             this.FormBorderStyle = FormBorderStyle.FixedDialog;
@@ -96,12 +99,43 @@ namespace WindowsFormsApp1
             lblDungeonValue = CreateValueLabel(trackDungeon.Value.ToString(), valueX, startY + rowHeight * 2 + 25);
             this.Controls.Add(lblDungeonValue);
 
+            // --- Resolution ---
+            var lblRes = CreateLabel("Resolution:", labelX, startY + rowHeight * 3);
+            this.Controls.Add(lblRes);
+
+            cmbResolution = new ComboBox();
+            cmbResolution.DropDownStyle = ComboBoxStyle.DropDownList;
+            cmbResolution.Font = new Font("Microsoft Sans Serif", 10F);
+            cmbResolution.Items.AddRange(new object[]
+            {
+                "800 \u00D7 450 (Small)",
+                "1024 \u00D7 576 (Medium)",
+                "1280 \u00D7 720 (HD)",
+                "1600 \u00D7 900 (Large)",
+                "1920 \u00D7 1080 (Full HD)"
+            });
+            // select current resolution
+            Size[] resolutions = new Size[]
+            {
+                new Size(800, 450), new Size(1024, 576), new Size(1280, 720),
+                new Size(1600, 900), new Size(1920, 1080)
+            };
+            int selIdx = 0;
+            for (int ri = 0; ri < resolutions.Length; ri++)
+            {
+                if (resolutions[ri] == Resolution) { selIdx = ri; break; }
+            }
+            cmbResolution.SelectedIndex = selIdx;
+            cmbResolution.Location = new Point(trackX, startY + rowHeight * 3 + 25);
+            cmbResolution.Size = new Size(trackWidth + 60, 28);
+            this.Controls.Add(cmbResolution);
+
             // --- Buttons ---
             btnSave = new Button();
             btnSave.Text = "Save";
             btnSave.Font = new Font("Microsoft Sans Serif", 11F, FontStyle.Bold);
             btnSave.Size = new Size(100, 38);
-            btnSave.Location = new Point(80, startY + rowHeight * 3 + 10);
+            btnSave.Location = new Point(80, startY + rowHeight * 4 + 10);
             btnSave.FlatStyle = FlatStyle.Flat;
             btnSave.BackColor = Color.FromArgb(200, 34, 139, 34);
             btnSave.ForeColor = Color.White;
@@ -112,7 +146,7 @@ namespace WindowsFormsApp1
             btnCancel.Text = "Cancel";
             btnCancel.Font = new Font("Microsoft Sans Serif", 11F, FontStyle.Bold);
             btnCancel.Size = new Size(100, 38);
-            btnCancel.Location = new Point(240, startY + rowHeight * 3 + 10);
+            btnCancel.Location = new Point(240, startY + rowHeight * 4 + 10);
             btnCancel.FlatStyle = FlatStyle.Flat;
             btnCancel.BackColor = Color.FromArgb(200, 180, 30, 30);
             btnCancel.ForeColor = Color.White;
@@ -144,11 +178,18 @@ namespace WindowsFormsApp1
             return lbl;
         }
 
+        private static readonly Size[] Resolutions = new Size[]
+        {
+            new Size(800, 450), new Size(1024, 576), new Size(1280, 720),
+            new Size(1600, 900), new Size(1920, 1080)
+        };
+
         private void BtnSave_Click(object sender, EventArgs e)
         {
             PipeGap = trackPipeGap.Value;
             BasePipeSpeed = trackSpeed.Value;
             DungeonIntervalSeconds = trackDungeon.Value;
+            Resolution = Resolutions[cmbResolution.SelectedIndex];
             this.DialogResult = DialogResult.OK;
             this.Close();
         }

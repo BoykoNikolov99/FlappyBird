@@ -19,6 +19,7 @@ namespace WindowsFormsApp1
         public int PipeGap { get; set; } = 120;
         public int BasePipeSpeed { get; set; } = 6;
         public int DungeonIntervalSeconds { get; set; } = 6;
+        public Size GameResolution { get; set; } = new Size(800, 450);
 
         public MainMenuForm()
         {
@@ -126,7 +127,7 @@ namespace WindowsFormsApp1
         private void BtnNewGame_Click(object sender, EventArgs e)
         {
             this.Hide();
-            var gameForm = new Form1(PipeGap, BasePipeSpeed, DungeonIntervalSeconds, highScore);
+            var gameForm = new Form1(PipeGap, BasePipeSpeed, DungeonIntervalSeconds, highScore, GameResolution.Width, GameResolution.Height);
             gameForm.FormClosed += (s, args) =>
             {
                 if (gameForm.HighScore > highScore)
@@ -146,13 +147,14 @@ namespace WindowsFormsApp1
 
         private void BtnOptions_Click(object sender, EventArgs e)
         {
-            using (var optionsForm = new OptionsForm(PipeGap, BasePipeSpeed, DungeonIntervalSeconds))
+            using (var optionsForm = new OptionsForm(PipeGap, BasePipeSpeed, DungeonIntervalSeconds, GameResolution))
             {
                 if (optionsForm.ShowDialog(this) == DialogResult.OK)
                 {
                     PipeGap = optionsForm.PipeGap;
                     BasePipeSpeed = optionsForm.BasePipeSpeed;
                     DungeonIntervalSeconds = optionsForm.DungeonIntervalSeconds;
+                    GameResolution = optionsForm.Resolution;
                 }
             }
         }

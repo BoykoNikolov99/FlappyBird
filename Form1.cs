@@ -68,18 +68,27 @@ namespace WindowsFormsApp1
         private int dungeonRegionStart = int.MaxValue;
         private int dungeonRegionEnd = int.MinValue;
 
+        // resolution scaling
+        private int resWidth = 800;
+        private int resHeight = 450;
+        private double scale = 1.0;
+        private int flapImpulse = -12;
+        private int maxFallSpeed = 10;
+
         public Form1()
         {
             InitializeComponent();
         }
 
-        public Form1(int pipeGapSetting, int baseSpeedSetting, int dungeonIntervalSetting, int currentHighScore = 0)
+        public Form1(int pipeGapSetting, int baseSpeedSetting, int dungeonIntervalSetting, int currentHighScore = 0, int resolutionWidth = 800, int resolutionHeight = 450)
         {
             InitializeComponent();
             pipeGap = pipeGapSetting;
             basePipeSpeed = baseSpeedSetting;
             dungeonInterval = TimeSpan.FromSeconds(dungeonIntervalSetting);
             highScore = currentHighScore;
+            resWidth = resolutionWidth;
+            resHeight = resolutionHeight;
         }
 
         private void ApplyPipeAppearance()
@@ -484,13 +493,30 @@ namespace WindowsFormsApp1
             // ensure the form receives key events even when child controls have focus
             this.KeyPreview = true;
             IconHelper.SetFormIcon(this);
+
+            // Apply resolution and compute scale factor (base design = 800×450)
+            scale = resWidth / 800.0;
+            this.ClientSize = new Size(resWidth, resHeight);
+            this.FormBorderStyle = FormBorderStyle.FixedSingle;
+            this.MaximizeBox = false;
+
+            // Scale game constants to match resolution
+            pipeWidth = (int)(100 * scale);
+            pipeStartX = resWidth;
+            pipeSpacing = (int)(320 * scale);
+            dungeonSpacing = (int)(120 * scale);
+            pipeGap = (int)(pipeGap * scale);
+            gravity = Math.Max(1, (int)Math.Round(2 * scale));
+            flapImpulse = -(int)Math.Round(12 * scale);
+            maxFallSpeed = (int)Math.Round(10 * scale);
+            basePipeSpeed = (int)Math.Round(basePipeSpeed * scale);
             // Ensure the bird PictureBox is visible and on top.
             // Reset size/location so it starts visible (higher on screen) and won't immediately fall off.
             bird.Visible = true;
             bird.BackColor = Color.Yellow;
-            bird.Size = new Size(40, 28);
+            bird.Size = new Size((int)(40 * scale), (int)(28 * scale));
             // Start the bird higher so gravity doesn't push it off-screen before the user can react.
-            bird.Location = new Point(56, 200);
+            bird.Location = new Point((int)(56 * scale), (int)(200 * scale));
             bird.BringToFront();
 
             // Try loading flappy-bird.png from the application folder first, then fall
@@ -509,7 +535,7 @@ namespace WindowsFormsApp1
                     bird.SizeMode = PictureBoxSizeMode.StretchImage;
                     // Use a fixed display size for the bird so large source images don't
                     // make the PictureBox huge and cause immediate collisions.
-                    bird.Size = new Size(45, 32);
+                    bird.Size = new Size((int)(45 * scale), (int)(32 * scale));
                     bird.BackColor = Color.Transparent;
                     bird.BringToFront();
                     break; // loaded an image, stop searching
@@ -523,9 +549,9 @@ namespace WindowsFormsApp1
             // Create the game over label but keep it hidden until needed
             gameOverText = new Label();
             gameOverText.AutoSize = false;
-            gameOverText.Size = new Size(400, 60);
+            gameOverText.Size = new Size((int)(400 * scale), (int)(60 * scale));
             gameOverText.TextAlign = ContentAlignment.MiddleCenter;
-            gameOverText.Font = new Font("Microsoft Sans Serif", 18F, FontStyle.Bold, GraphicsUnit.Point, ((byte)(0)));
+            gameOverText.Font = new Font("Microsoft Sans Serif", (float)(18 * scale), FontStyle.Bold, GraphicsUnit.Point, ((byte)(0)));
             gameOverText.ForeColor = Color.Red;
             gameOverText.BackColor = Color.Transparent;
             gameOverText.Location = new Point((this.ClientSize.Width - gameOverText.Width) / 2, (this.ClientSize.Height - gameOverText.Height) / 2);
@@ -533,9 +559,10 @@ namespace WindowsFormsApp1
             gameOverText.Visible = false;
 
             // Create in-game high score label next to the score
+            scoreText.Font = new Font("Microsoft Sans Serif", (float)(20.25 * scale), FontStyle.Regular, GraphicsUnit.Point, ((byte)(0)));
             highScoreText = new Label();
             highScoreText.AutoSize = true;
-            highScoreText.Font = new Font("Microsoft Sans Serif", 14F, FontStyle.Bold, GraphicsUnit.Point, ((byte)(0)));
+            highScoreText.Font = new Font("Microsoft Sans Serif", (float)(14 * scale), FontStyle.Bold, GraphicsUnit.Point, ((byte)(0)));
             highScoreText.ForeColor = Color.Gold;
             highScoreText.BackColor = Color.Transparent;
             highScoreText.Text = "Best: " + highScore;
@@ -547,7 +574,8 @@ namespace WindowsFormsApp1
 
             // create a pause button so user can pause the game to take screenshots
             pauseButton = new Button();
-            pauseButton.Size = new Size(80, 30);
+            pauseButton.Size = new Size((int)(80 * scale), (int)(30 * scale));
+            pauseButton.Font = new Font("Microsoft Sans Serif", (float)(8.25 * scale));
             pauseButton.Location = new Point(this.ClientSize.Width - pauseButton.Width - 10, 10);
             pauseButton.Text = "Pause";
             pauseButton.Anchor = AnchorStyles.Top | AnchorStyles.Right;
@@ -557,8 +585,8 @@ namespace WindowsFormsApp1
 
             // create an on-screen pause indicator for easy screenshots
             pauseIndicator = new Label();
-            pauseIndicator.Size = new Size(220, 80);
-            pauseIndicator.Font = new Font("Microsoft Sans Serif", 20F, FontStyle.Bold, GraphicsUnit.Point);
+            pauseIndicator.Size = new Size((int)(220 * scale), (int)(80 * scale));
+            pauseIndicator.Font = new Font("Microsoft Sans Serif", (float)(20 * scale), FontStyle.Bold, GraphicsUnit.Point);
             pauseIndicator.Text = "PAUSED";
             pauseIndicator.TextAlign = ContentAlignment.MiddleCenter;
             pauseIndicator.ForeColor = Color.White;
@@ -763,7 +791,7 @@ namespace WindowsFormsApp1
             // apply gravity to vertical speed and move bird
             verticalSpeed += gravity;
             // cap vertical speed to avoid excessive fall velocity
-            verticalSpeed = Math.Min(verticalSpeed, 10);
+            verticalSpeed = Math.Min(verticalSpeed, maxFallSpeed);
             bird.Top += verticalSpeed;
 
             // move all pipes and handle respawn/score
@@ -1127,7 +1155,7 @@ namespace WindowsFormsApp1
 
             // Collision detection using shrunken hitboxes to match visible sprites
             var birdRect = bird.Bounds;
-            birdRect.Inflate(-8, -6); // shrink bird hitbox to forgive transparent edges but still detect real overlaps
+            birdRect.Inflate((int)(-8 * scale), (int)(-6 * scale));
 
             // check each normal pipe pair
             for (int i = 0; i < pipeTops.Count; i++)
@@ -1137,8 +1165,8 @@ namespace WindowsFormsApp1
 
                 var topRect = top.Bounds;
                 var bottomRect = bottom.Bounds;
-                topRect.Inflate(-6, -4);
-                bottomRect.Inflate(-6, -4);
+                topRect.Inflate((int)(-6 * scale), (int)(-4 * scale));
+                bottomRect.Inflate((int)(-6 * scale), (int)(-4 * scale));
 
                 if (birdRect.IntersectsWith(topRect) || birdRect.IntersectsWith(bottomRect))
                 {
@@ -1155,12 +1183,12 @@ namespace WindowsFormsApp1
                     var top = dungeonTops[i];
                     var bottom = dungeonBottoms[i];
 
-                    var topRect = top.Bounds;
-                    var bottomRect = bottom.Bounds;
-                    topRect.Inflate(-6, -4);
-                    bottomRect.Inflate(-6, -4);
+                    var topRect2 = top.Bounds;
+                    var bottomRect2 = bottom.Bounds;
+                    topRect2.Inflate((int)(-6 * scale), (int)(-4 * scale));
+                    bottomRect2.Inflate((int)(-6 * scale), (int)(-4 * scale));
 
-                    if (birdRect.IntersectsWith(topRect) || birdRect.IntersectsWith(bottomRect))
+                    if (birdRect.IntersectsWith(topRect2) || birdRect.IntersectsWith(bottomRect2))
                     {
                         GameOver();
                         break;
@@ -1194,8 +1222,8 @@ namespace WindowsFormsApp1
             {
                 btnMainMenu = new Button();
                 btnMainMenu.Text = "Main Menu";
-                btnMainMenu.Font = new Font("Microsoft Sans Serif", 11F, FontStyle.Bold);
-                btnMainMenu.Size = new Size(140, 38);
+                btnMainMenu.Font = new Font("Microsoft Sans Serif", (float)(11 * scale), FontStyle.Bold);
+                btnMainMenu.Size = new Size((int)(140 * scale), (int)(38 * scale));
                 btnMainMenu.FlatStyle = FlatStyle.Flat;
                 btnMainMenu.FlatAppearance.BorderColor = Color.White;
                 btnMainMenu.FlatAppearance.BorderSize = 2;
@@ -1282,7 +1310,7 @@ namespace WindowsFormsApp1
             }
 
             // Reset bird and physics
-            bird.Location = new Point(56, 200);
+            bird.Location = new Point((int)(56 * scale), (int)(200 * scale));
             verticalSpeed = 0;
 
             // Reset runtime speed and dungeon trigger timer so dungeons don't
@@ -1310,7 +1338,7 @@ namespace WindowsFormsApp1
             if (e.KeyCode == Keys.Space && !isGameOver)
             {
                 // give the bird an upward impulse
-                verticalSpeed = -12;
+                verticalSpeed = flapImpulse;
                 e.SuppressKeyPress = true;
                 return;
             }
